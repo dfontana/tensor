@@ -1,0 +1,11 @@
+[tools]
+lua = "latest"
+lua-language-server = "latest"
+
+[tasks.test]
+description = "Run tensor tests"
+run = "busted test"
+
+[tasks.run]
+description = "Run the tensor example"
+run = "lua lua/main.lua"
