@@ -30,6 +30,54 @@ describe("tensor", function()
     end
   end)
 
+  it("satisfies element-wise addition and subtraction identities", function()
+    local b = tensor.new({ 2, 3 }, { 6, 5, 4, 3, 2, 1 })
+    local zero = tensor.new({ 2, 3 }, { 0, 0, 0, 0, 0, 0 })
+    for _, case in ipairs({
+      { a:add(b), b:add(a) },
+      { a:add(b):sub(b), a },
+      { a:sub(a), zero },
+    }) do
+      assert.equal(case[2], case[1])
+    end
+  end)
+
+  it("satisfies element-wise multiplication identities", function()
+    local b = tensor.new({ 2, 3 }, { 6, 5, 4, 3, 2, 1 })
+    local zero = tensor.new({ 2, 3 }, { 0, 0, 0, 0, 0, 0 })
+    local one = tensor.new({ 2, 3 }, { 1, 1, 1, 1, 1, 1 })
+    for _, case in ipairs({
+      { a:mul(b), b:mul(a) },
+      { a:mul(one), a },
+      { a:mul(zero), zero },
+    }) do
+      assert.equal(case[2], case[1])
+    end
+  end)
+
+  it("satisfies scalar multiplication identities", function()
+    local zero = tensor.new({ 2, 3 }, { 0, 0, 0, 0, 0, 0 })
+    for _, case in ipairs({
+      { a:scale(1), a },
+      { a:scale(0), zero },
+      { a:scale(2), a:add(a) },
+    }) do
+      assert.equal(case[2], case[1])
+    end
+  end)
+
+  it("reduces tensors to scalar tensors", function()
+    local scalar = tensor.new({}, { 21 })
+    assert.equal(scalar, a:sum())
+    assert.equal(a:sum(), a:transpose():sum())
+  end)
+
+  it("computes means as scalar tensors", function()
+    local scalar = tensor.new({}, { 3.5 })
+    assert.equal(scalar, a:mean())
+    assert.equal(a:mean(), a:transpose():mean())
+  end)
+
   it("compares tensors", function()
     for _, case in ipairs({ { a, true }, { tensor.new({ 3, 2 }, { 7, 8, 9, 10, 11, 12 }), false }, { 1, false } }) do
       assert.equal(case[2], a == case[1])

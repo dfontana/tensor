@@ -77,10 +77,48 @@ function Tensor:transpose()
   return Tensor.new(shape, data)
 end
 
+---Element-wise multiplication
+---@param t Tensor
+---@return Tensor
+function Tensor:mul(t)
+  return self
+end
+
+---@param t Tensor
+---@return Tensor
+function Tensor:add(t)
+  return self
+end
+
+---@param t Tensor
+---@return Tensor
+function Tensor:sub(t)
+  return self
+end
+
+---@param t Tensor (scalar) to scale tensor by
+---@return Tensor
+function Tensor:scale(t)
+  return self
+end
+
+---@return Tensor (scalar)
+function Tensor:mean()
+  return self
+end
+
+---@return Tensor (scalar)
+function Tensor:sum()
+  return self
+end
+
+---@return string
 function Tensor:__tostring()
   return self:_sshape() .. " " .. "[" .. table.concat(self.data, ',') .. "]"
 end
 
+---@param t any
+---@return boolean
 function Tensor:__eq(t)
   if getmetatable(t) ~= Tensor then
     return false
@@ -104,6 +142,7 @@ function Tensor:__eq(t)
   return true
 end
 
+---@return string
 function Tensor:_sshape()
   return "(" .. table.concat(self.shape, ',') .. ")"
 end
