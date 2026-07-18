@@ -1,4 +1,3 @@
-1. Element wise ops (add, sub, sum, element-wise multiply)
 2. Graph rec (parents + back function for each op)
   - Parents: Each op returns a new tensor pointing back to it's parents that made it (so tensors start storing list of tensors). Order matters.
   - Back Func: Sends gradient back to parents ("given change in output, how much should each input change. Local derivatives, chain rule.").

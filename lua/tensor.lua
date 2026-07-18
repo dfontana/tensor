@@ -31,6 +31,7 @@ end
 ---@param row number Row
 ---@param col number Column
 ---@return number
+-- TODO: Return index as well as value
 function Tensor:index(row, col)
   local offset = index_of(row, col, self.shape)
   --TODO: Sparse data would need manual counts
@@ -81,35 +82,73 @@ end
 ---@param t Tensor
 ---@return Tensor
 function Tensor:mul(t)
-  return self
+  assert(self:eq_shape(t))
+  local data = {}
+  for r = 1, self.shape[0] do
+    for c = 1, self.shape[1] do
+      local tOffset = index_of(r, c, self.shape)
+      data[tOffset] = self:index(r, c) * t:index(r, c)
+    end
+  end
+  return Tensor.new(self.shape, data)
 end
 
 ---@param t Tensor
 ---@return Tensor
 function Tensor:add(t)
-  return self
+  assert(self:eq_shape(t))
+  local data = {}
+  for r = 1, self.shape[0] do
+    for c = 1, self.shape[1] do
+      local tOffset = index_of(r, c, self.shape)
+      data[tOffset] = self:index(r, c) + t:index(r, c)
+    end
+  end
+  return Tensor.new(self.shape, data)
 end
 
 ---@param t Tensor
 ---@return Tensor
 function Tensor:sub(t)
-  return self
+  assert(self:eq_shape(t))
+  local data = {}
+  for r = 1, self.shape[0] do
+    for c = 1, self.shape[1] do
+      local tOffset = index_of(r, c, self.shape)
+      data[tOffset] = self:index(r, c) - t:index(r, c)
+    end
+  end
+  return Tensor.new(self.shape, data)
 end
 
 ---@param t Tensor (scalar) to scale tensor by
 ---@return Tensor
 function Tensor:scale(t)
-  return self
+  assert(#t.data == 1)
+  local data = {}
+  for r = 1, self.shape[0] do
+    for c = 1, self.shape[1] do
+      local tOffset = index_of(r, c, self.shape)
+      data[tOffset] = self:index(r, c) * t.data[0]
+    end
+  end
+  return Tensor.new(self.shape, data)
 end
 
 ---@return Tensor (scalar)
 function Tensor:mean()
-  return self
+  return Tensor.new({ 1, 1 }, { self:sum() / #self.data })
 end
 
 ---@return Tensor (scalar)
 function Tensor:sum()
-  return self
+  local value = 0
+  for r = 1, self.shape[0] do
+    for c = 1, self.shape[1] do
+      value = value + self:index(r, c)
+    end
+  end
+  return Tensor.new({ 1, 1 }, { value })
 end
 
 ---@return string
@@ -123,19 +162,26 @@ function Tensor:__eq(t)
   if getmetatable(t) ~= Tensor then
     return false
   end
-  if #self.shape ~= #t.shape then
+  if not self:eq_shape(t) then
     return false
   end
   if #self.data ~= #t.data then
     return false
   end
-  for i = 1, #self.shape do
-    if self.shape[i] ~= t.shape[i] then
+  for i = 1, #self.data do
+    if self.data[i] ~= t.data[i] then
       return false
     end
   end
-  for i = 1, #self.data do
-    if self.data[i] ~= t.data[i] then
+  return true
+end
+
+function Tensor:eq_shape(t)
+  if #self.shape ~= #t.shape then
+    return false
+  end
+  for i = 1, #self.shape do
+    if self.shape[i] ~= t.shape[i] then
       return false
     end
   end
