@@ -73,6 +73,35 @@ function Tensor:_is_scalar()
   return #self.shape == 0
 end
 
+---Perform a backwards pass starting at this scalar tensor. This updates
+---all gradients of the graph in-place, so nothing is returned
+---@return nil
+function Tensor:backwards()
+  assert(self:_is_scalar(), "Can only run backwards on a scalar")
+  self.gradient.data[1] = 1
+  local order = {}
+  local seen = { self = true }
+  local frontier = { { node = self, expanded = false } }
+  while #frontier ~= 0 do
+    local t = table.remove(frontier)
+    local next, expanded = t.node, t.expanded
+    if not expanded then
+      table.insert(frontier, { node = next, expanded = true })
+      for _, p in ipairs(next.parents) do
+        if not seen[p] then
+          seen[p] = true
+          table.insert(frontier, { node = p, expanded = false })
+        end
+      end
+    else
+      table.insert(order, next)
+    end
+  end
+  for i = #order, 1, -1 do
+    order[i]:_backward()
+  end
+end
+
 ---@param t Tensor
 ---@return Tensor
 function Tensor:matmul(t)

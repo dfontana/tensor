@@ -32,3 +32,9 @@ So the gradient update of A.i is effectively taking the sum of C.i * B.i for the
 -- CC  BBB  AAA
 -- CC  BBB  AAA
 ```
+
+## On Topological Sort & Backwards Pass
+
+The naive approach materializes a full list of references in the graph. If I wanted to stream it, I'd have to track during the forward pass how many children each node has (count) so when children start backprop'ing, I can know which nodes are "ready" based on how many children counts hit 0. A child count decreases on the parent each time its child calls it's back_prop function.
+
+This isn't free, it still requires tracking extra metadata per node (child ready count) vs a list of pointers, but does mean we can reduce peak memory consumption in favor of a larger total graph size "on disk".

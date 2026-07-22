@@ -480,3 +480,154 @@ describe("tensor backward propagation", function()
     end)
   end)
 end)
+
+describe("Tensor:backwards", function()
+  local function clone_data(data)
+    local out = {}
+    for i, v in ipairs(data) do out[i] = v end
+    return out
+  end
+
+  local function perturbed(t, idx, delta)
+    local data = clone_data(t.data)
+    data[idx] = data[idx] + delta
+    return tensor.new(t.shape, data)
+  end
+
+  -- Builds a fresh, independent copy of raw_inputs (so backwards() never
+  -- mutates the values under test), runs forward_fn to build the graph,
+  -- calls backwards() on the (scalar) result, and checks every leaf's
+  -- accumulated gradient against a central-difference numerical estimate
+  -- obtained by re-running forward_fn from scratch on perturbed inputs.
+  -- This validates full multi-op graph traversal (ordering, accumulation,
+  -- shape handling) without hand-encoding any calculus here.
+  local function assert_full_gradcheck(forward_fn, raw_inputs, eps, tolerance)
+    local inputs = {}
+    for i, t in ipairs(raw_inputs) do
+      inputs[i] = tensor.new(t.shape, clone_data(t.data))
+    end
+    local out = forward_fn(inputs)
+    out:backwards()
+
+    for i, t in ipairs(inputs) do
+      for elem = 1, #t.data do
+        local plus, minus = {}, {}
+        for j, raw in ipairs(raw_inputs) do
+          plus[j] = tensor.new(raw.shape, clone_data(raw.data))
+          minus[j] = tensor.new(raw.shape, clone_data(raw.data))
+        end
+        plus[i] = perturbed(inputs[i], elem, eps)
+        minus[i] = perturbed(inputs[i], elem, -eps)
+        local numeric = (forward_fn(plus).data[1] - forward_fn(minus).data[1]) / (2 * eps)
+        assert.near(numeric, t.gradient.data[elem], tolerance)
+      end
+    end
+  end
+
+  it("errors when called on a non-scalar tensor", function()
+    local m = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
+    assert.has_error(function() m:backwards() end)
+  end)
+
+  it("does not error when called on a scalar tensor", function()
+    local s = tensor.new({}, { 5 })
+    assert.has_no.errors(function() s:backwards() end)
+  end)
+
+  it("seeds its own gradient to 1", function()
+    local x = tensor.new({}, { 3 })
+    local y = tensor.new({}, { 4 })
+    local loss = x:add(y)
+    loss:backwards()
+    assert.equal(1, loss.gradient.data[1])
+  end)
+
+  it("leaves the gradient of a leaf with no path to the loss at zero", function()
+    local x = tensor.new({}, { 3 })
+    local y = tensor.new({}, { 4 })
+    local unrelated = tensor.new({}, { 100 })
+    local loss = x:add(y)
+    loss:backwards()
+    assert.equal(0, unrelated.gradient.data[1])
+  end)
+
+  it("propagates correctly through a diamond dependency (one leaf feeding two paths that reconverge)", function()
+    assert_full_gradcheck(function(t)
+      local x = t[1]
+      local a = x:mul(x)
+      local b = x:add(tensor.new({}, { 5 }))
+      return a:add(b)
+    end, { tensor.new({}, { 3 }) }, 1e-4, 1e-3)
+  end)
+
+  it("propagates correctly through a diamond where the shared node has further parents of its own", function()
+    -- w -> q -> {p1, p2} -> loss. A correct traversal must fully accumulate
+    -- q's gradient (from both p1 and p2) before using it to propagate into
+    -- w; visiting q's backward too early would silently drop a contribution.
+    assert_full_gradcheck(function(t)
+      local w = t[1]
+      local q = w:mul(w)
+      local p1 = q:add(tensor.new({}, { 2 }))
+      local p2 = q:mul(tensor.new({}, { 3 }))
+      return p1:add(p2)
+    end, { tensor.new({}, { 2 }) }, 1e-4, 1e-3)
+  end)
+
+  it("propagates correctly through a matrix-valued diamond reduced to a scalar loss", function()
+    assert_full_gradcheck(function(t)
+      local x = t[1]
+      local a = x:mul(x)
+      local b = x:sub(tensor.new({}, { 1 }))
+      return a:add(b):sum()
+    end, { tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 }) }, 1e-4, 1e-3)
+  end)
+
+  it("propagates correctly through a long chain of ops (deep graph traversal)", function()
+    assert_full_gradcheck(function(t)
+      local x = t[1]
+      local y = x
+      for _ = 1, 8 do
+        y = y:add(x):mul(tensor.new({}, { 0.5 }))
+      end
+      return y
+    end, { tensor.new({}, { 1.5 }) }, 1e-4, 1e-2)
+  end)
+
+  it("propagates correctly when a tensor is reused across more than two consumers", function()
+    assert_full_gradcheck(function(t)
+      local x = t[1]
+      local a = x:mul(tensor.new({}, { 2 }))
+      local b = x:mul(tensor.new({}, { 3 }))
+      local c = x:mul(tensor.new({}, { 5 }))
+      return a:add(b):add(c)
+    end, { tensor.new({}, { 4 }) }, 1e-4, 1e-3)
+  end)
+
+  it("propagates correctly through a mix of matmul and elementwise ops in one graph", function()
+    assert_full_gradcheck(function(t)
+      local x, w = t[1], t[2]
+      local h = x:matmul(w)
+      local y = h:mul(h)
+      return y:sum()
+    end, {
+      tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 }),
+      tensor.new({ 3, 2 }, { 1, 0, 0, 1, 1, 1 }),
+    }, 1e-4, 1e-2)
+  end)
+
+  it("does not mutate leaf data or shapes when traversing the graph", function()
+    local x = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
+    local loss = x:mul(x):sum()
+    loss:backwards()
+    assert.same({ 1, 2, 3, 4, 5, 6 }, x.data)
+    assert.same({ 2, 3 }, x.shape)
+  end)
+
+  it("accumulates onto pre-existing parent gradients rather than overwriting them", function()
+    local x = tensor.new({}, { 3 })
+    x.gradient = tensor.new({}, { 100 })
+    local loss = x:add(tensor.new({}, { 1 }))
+    loss:backwards()
+    assert.equal(101, x.gradient.data[1])
+  end)
+end)
