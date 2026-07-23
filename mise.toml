@@ -6,6 +6,6 @@ lua-language-server = "latest"
 description = "Run tensor tests"
 run = "busted --helper test/helper.lua test"
 
-[tasks.run]
+[tasks.main]
 description = "Run the tensor example"
 run = "lua lua/main.lua"
