@@ -55,7 +55,7 @@ describe("Optimizer end-to-end (linear regression, the milestone goal)", functio
       last = loss.data[1]
       assert.is_true(last < previous)
       previous = last
-      loss:backwards()
+      loss:backward()
       sgd:step()
     end
     assert.is_true(last < 1e-2)
@@ -77,7 +77,7 @@ describe("Optimizer end-to-end (linear regression, the milestone goal)", functio
       local loss = forward(params)
       if loss.data[1] >= previous then monotonic = false end
       previous = loss.data[1]
-      loss:backwards()
+      loss:backward()
       sgd:step()
     end
     assert.is_false(monotonic)

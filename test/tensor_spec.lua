@@ -81,6 +81,13 @@ describe("tensor", function()
     end
   end)
 
+  it("applies relu elementwise, clamping negatives to zero", function()
+    local m = tensor.new({ 2, 3 }, { -3, -1, 0, 2, -4, 5 })
+    assert.equal(tensor.new({ 2, 3 }, { 0, 0, 0, 2, 0, 5 }), m:relu())
+    -- relu is the identity on an all-nonnegative tensor
+    assert.equal(a, a:relu())
+  end)
+
   it("reduces tensors to scalar tensors", function()
     local scalar = tensor.scalar(21)
     assert.equal(scalar, a:sum())
@@ -121,6 +128,7 @@ describe("tensor parent tracking", function()
       { a:transpose(), a },
       { a:sum(),       a },
       { a:mean(),      a },
+      { a:relu(),      a },
     }
     for _, case in ipairs(cases) do
       local result, input = case[1], case[2]
@@ -172,7 +180,7 @@ describe("tensor parent tracking", function()
   it("gives every non-leaf tensor a nonzero-length parents table", function()
     local results = {
       a:matmul(b), a:transpose(), a:mul(c), a:add(c), a:sub(c),
-      a:scale(s), a:pow(s), a:mean(), a:sum(),
+      a:scale(s), a:pow(s), a:mean(), a:sum(), a:relu(),
     }
     for _, result in ipairs(results) do
       assert.is_true(#result.parents > 0)
@@ -265,6 +273,70 @@ describe("tensor operations with scalar operands", function()
   end)
 end)
 
+describe("tensor operations with vector operands (broadcasting)", function()
+  -- The only vector broadcast we support is a bare vector {N} against a tensor
+  -- whose last dimension is N. The vector is repeated along the (contiguous)
+  -- last dimension for every leading position, and the result takes the fuller
+  -- tensor shape. There is no NumPy-style size-1 stretching: {N,1} column
+  -- vectors and mismatched last dimensions are rejected.
+  local m = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
+  local v = tensor.new({ 3 }, { 10, 20, 30 })
+
+  it("broadcasts a vector across the last dimension of a matrix", function()
+    local cases = {
+      { m:add(v), { 11, 22, 33, 14, 25, 36 } },
+      { v:add(m), { 11, 22, 33, 14, 25, 36 } },
+      { m:mul(v), { 10, 40, 90, 40, 100, 180 } },
+      { v:mul(m), { 10, 40, 90, 40, 100, 180 } },
+      { m:sub(v), { -9, -18, -27, -6, -15, -24 } },
+    }
+    for _, case in ipairs(cases) do
+      local result, expected = case[1], case[2]
+      assert.same(m.shape, result.shape)
+      assert.same(expected, result.data)
+    end
+  end)
+
+  it("broadcasts a vector across the last dimension of a 3-D tensor", function()
+    -- {2,2,3} against {3}: the vector repeats for all four leading rows.
+    local t = tensor.new({ 2, 2, 3 }, { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 })
+    local result = t:add(v)
+    assert.same({ 2, 2, 3 }, result.shape)
+    assert.same({ 11, 22, 33, 14, 25, 36, 17, 28, 39, 20, 31, 42 }, result.data)
+  end)
+
+  it("keeps vector minus matrix distinct from matrix minus vector (non-commutative)", function()
+    -- v - m is the exact negation of m - v: broadcasting must not quietly
+    -- symmetrize a non-commutative op.
+    assert.same({ 9, 18, 27, 6, 15, 24 }, v:sub(m).data)
+    for i = 1, #m.data do
+      assert.equal(-1 * m:sub(v).data[i], v:sub(m).data[i])
+    end
+  end)
+
+  it("rejects broadcasts outside the scalar / last-dimension-vector forms", function()
+    -- last dimension mismatch, and NumPy-style size-1 stretching, are errors.
+    assert.has_error(function() m:add(tensor.new({ 2 }, { 1, 2 })) end)
+    assert.has_error(function() m:add(tensor.new({ 2, 1 }, { 1, 2 })) end)
+    assert.has_error(function() m:add(tensor.new({ 2, 2 }, { 1, 2, 3, 4 })) end)
+  end)
+
+  it("records both operands as parents, by identity, for vector-broadcast ops", function()
+    local cases = {
+      { m:add(v), m, v },
+      { v:add(m), v, m },
+      { m:mul(v), m, v },
+      { m:sub(v), m, v },
+    }
+    for _, case in ipairs(cases) do
+      local result, lhs, rhs = case[1], case[2], case[3]
+      assert.equal(2, #result.parents)
+      assert.is_true(rawequal(result.parents[1], lhs))
+      assert.is_true(rawequal(result.parents[2], rhs))
+    end
+  end)
+end)
+
 describe("tensor backward propagation", function()
   local function clone_data(data)
     local out = {}
@@ -343,7 +415,7 @@ describe("tensor backward propagation", function()
     it("gives every non-leaf tensor a callable _backward", function()
       local results = {
         a:matmul(b34), a:transpose(), a:mul(c), a:add(c), a:sub(c),
-        a:scale(s), a:pow(s), a:mean(), a:sum(),
+        a:scale(s), a:pow(s), a:mean(), a:sum(), a:relu(),
       }
       for _, result in ipairs(results) do
         assert.equal("function", type(result._backward))
@@ -443,6 +515,26 @@ describe("tensor backward propagation", function()
     it("pow", function()
       assert_gradcheck(function(t) return t[1]:pow(t[2]) end,
         { a, s }, { 1, -2, 0.5, 3, -1, 2 }, 1e-4, 1e-3)
+    end)
+
+    it("relu", function()
+      -- Mixed-sign input kept well clear of 0 so the central-difference
+      -- estimate never straddles relu's non-differentiable kink at 0, where
+      -- the numerical and analytic gradients would legitimately disagree.
+      local mixed = tensor.new({ 2, 3 }, { -3, -1, 0.5, 2, -4, 5 })
+      assert_gradcheck(function(t) return t[1]:relu() end,
+        { mixed }, { 1, -2, 0.5, 3, -1, 2 }, 1e-4, 1e-3)
+    end)
+
+    -- The gradient flows through only where the input was positive: relu is
+    -- flat (slope 0) on negatives and passes the upstream gradient through
+    -- unchanged on positives.
+    it("gates the gradient by the sign of the input", function()
+      local x = tensor.new({ 1, 4 }, { -2, -0.5, 1, 3 })
+      local out = x:relu()
+      out.gradient = tensor.new(out.shape, { 5, 6, 7, 8 })
+      out:_backward()
+      assert.same({ 0, 0, 7, 8 }, x.gradient.data)
     end)
 
     -- The squared-error loss (mean((pred - target)^2)) routinely raises a
@@ -547,10 +639,62 @@ describe("tensor backward propagation", function()
         end)
       end
     end)
+
+    describe("vector to matrix gradient", function()
+      -- A vector {N} is repeated along the last dimension of the {m,N} matrix.
+      -- The backward pass must "unbroadcast": each vector element's gradient is
+      -- the sum of the upstream gradients at every position it was copied to,
+      -- while the matrix gradient passes straight through. The gradcheck
+      -- confirms both operands' analytic gradients match the numerical ones.
+      local matrix = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
+      local v = tensor.new({ 3 }, { 10, 20, 30 })
+      local seed = { 1, -2, 0.5, 3, -1, 2 }
+
+      it("add (matrix + vector)", function()
+        assert_gradcheck(function(t) return t[1]:add(t[2]) end,
+          { matrix, v }, seed, 1e-4, 1e-3)
+      end)
+      it("add (vector + matrix)", function()
+        assert_gradcheck(function(t) return t[1]:add(t[2]) end,
+          { v, matrix }, seed, 1e-4, 1e-3)
+      end)
+      it("sub (matrix - vector)", function()
+        assert_gradcheck(function(t) return t[1]:sub(t[2]) end,
+          { matrix, v }, seed, 1e-4, 1e-3)
+      end)
+      it("mul (matrix * vector)", function()
+        assert_gradcheck(function(t) return t[1]:mul(t[2]) end,
+          { matrix, v }, seed, 1e-4, 1e-3)
+      end)
+      it("mul (vector * matrix)", function()
+        assert_gradcheck(function(t) return t[1]:mul(t[2]) end,
+          { v, matrix }, seed, 1e-4, 1e-3)
+      end)
+    end)
+
+    -- Broadcasting a vector out to a matrix-shaped result must not leak the
+    -- matrix shape back into the vector's own gradient: the vector's gradient
+    -- must keep the vector's shape, holding the summed contributions from
+    -- every row it was broadcast across.
+    describe("keeps a vector operand's gradient vector-shaped and unbroadcast", function()
+      it("sums a vector's gradient down the broadcast rows", function()
+        local matrix = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
+        local v = tensor.new({ 3 }, { 10, 20, 30 })
+        local out = matrix:add(v)
+        out.gradient = tensor.new(out.shape, { 1, 2, 3, 4, 5, 6 })
+        out:_backward()
+        -- v was copied onto both rows, so its gradient is the column-wise
+        -- sum of the upstream: { 1+4, 2+5, 3+6 }.
+        assert.same({ 3 }, v.gradient.shape)
+        assert.same({ 5, 7, 9 }, v.gradient.data)
+        -- the matrix sees the upstream gradient unchanged
+        assert.same({ 1, 2, 3, 4, 5, 6 }, matrix.gradient.data)
+      end)
+    end)
   end)
 end)
 
-describe("Tensor:backwards", function()
+describe("Tensor:backward", function()
   local function clone_data(data)
     local out = {}
     for i, v in ipairs(data) do out[i] = v end
@@ -576,7 +720,7 @@ describe("Tensor:backwards", function()
       inputs[i] = tensor.new(t.shape, clone_data(t.data))
     end
     local out = forward_fn(inputs)
-    out:backwards()
+    out:backward()
 
     for i, t in ipairs(inputs) do
       for elem = 1, #t.data do
@@ -595,19 +739,19 @@ describe("Tensor:backwards", function()
 
   it("errors when called on a non-scalar tensor", function()
     local m = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
-    assert.has_error(function() m:backwards() end)
+    assert.has_error(function() m:backward() end)
   end)
 
   it("does not error when called on a scalar tensor", function()
     local s = tensor.scalar(5)
-    assert.has_no.errors(function() s:backwards() end)
+    assert.has_no.errors(function() s:backward() end)
   end)
 
   it("seeds its own gradient to 1", function()
     local x = tensor.scalar(3)
     local y = tensor.scalar(4)
     local loss = x:add(y)
-    loss:backwards()
+    loss:backward()
     assert.equal(1, loss.gradient.data[1])
   end)
 
@@ -616,7 +760,7 @@ describe("Tensor:backwards", function()
     local y = tensor.scalar(4)
     local unrelated = tensor.scalar(100)
     local loss = x:add(y)
-    loss:backwards()
+    loss:backward()
     assert.equal(0, unrelated.gradient.data[1])
   end)
 
@@ -702,7 +846,7 @@ describe("Tensor:backwards", function()
   it("does not mutate leaf data or shapes when traversing the graph", function()
     local x = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
     local loss = x:mul(x):sum()
-    loss:backwards()
+    loss:backward()
     assert.same({ 1, 2, 3, 4, 5, 6 }, x.data)
     assert.same({ 2, 3 }, x.shape)
   end)
@@ -711,7 +855,7 @@ describe("Tensor:backwards", function()
     local x = tensor.scalar(3)
     x.gradient = tensor.scalar(100)
     local loss = x:add(tensor.scalar(1))
-    loss:backwards()
+    loss:backward()
     assert.equal(101, x.gradient.data[1])
   end)
 end)

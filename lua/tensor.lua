@@ -140,7 +140,7 @@ end
 ---Perform a backwards pass starting at this scalar tensor. This updates
 ---all gradients of the graph in-place, so nothing is returned
 ---@return nil
-function Tensor:backwards()
+function Tensor:backward()
   assert(self:_is_scalar(), "Can only run backwards on a scalar")
   self.gradient.data[1] = 1
   local order = {}
@@ -259,6 +259,27 @@ function Tensor:sub(t)
   return ret
 end
 
+---It's an element-wise max(0, x)
+---@return Tensor
+function Tensor:relu()
+  local ret = self:_unary_elementwise(function(a)
+    return math.max(0, a)
+  end)
+  ret.parents = { self }
+  ret._backward = function()
+    local data = {}
+    for i = 1, Tensor.numel(self.shape) do
+      if self.data[i] > 0 then
+        data[i] = ret.gradient.data[i]
+      else
+        data[i] = 0
+      end
+    end
+    self:_accumulate_grad(Tensor.new(self.shape, data))
+  end
+  return ret
+end
+
 ---@param t Tensor (scalar)
 ---@return Tensor
 function Tensor:pow(t)
@@ -336,53 +357,120 @@ function Tensor:sum()
   return ret
 end
 
--- Apply a binary elementwise operation accounting for scalars (broadcasting)
+---Compute the broadcast output shape against the given Tensors. Only two forms are
+---supported: scalar {} against anything, and a vector {N} against a tensor whose
+---last dimension is N. Anything else (e.g. {4,3}+{4}, {4,3}+{4,1}) is an error.
+---@param at Tensor
+---@param bt Tensor
+---@return Shape
+local function broadcast_output_shape(at, bt)
+  local a = at.shape
+  local b = bt.shape
+  if #a == 0 then
+    return b
+  end
+  if #b == 0 then
+    return a
+  end
+  if at:_eq_shape(bt) then
+    return a
+  end
+  if #a == 1 then
+    assert(b[#b] == a[1],
+      "cannot broadcast (" .. table.concat(a, ',') .. ") with (" .. table.concat(b, ',') .. ")")
+    return b
+  end
+  if #b == 1 then
+    assert(a[#a] == b[1],
+      "cannot broadcast (" .. table.concat(a, ',') .. ") with (" .. table.concat(b, ',') .. ")")
+    return a
+  end
+  error("cannot broadcast (" .. table.concat(a, ',') .. ") with (" .. table.concat(b, ',') .. ")")
+end
+
+---Read an operand's value for the i-th element of a broadcast result of `size`
+---elements. Scalars repeat their single value; a vector {N} repeats along the
+---(contiguous) last dimension; a full-shaped operand indexes directly.
+---@param operand Tensor
+---@param i number flat (1-based) index into the broadcast result
+---@param size number number of elements in the broadcast result
+---@return number
+local function broadcast_get(operand, i, size)
+  if #operand.shape == 0 then
+    return operand.data[1]
+  end
+  if #operand.data == size then
+    return operand.data[i]
+  end
+  local n = operand.shape[#operand.shape]
+  return operand.data[((i - 1) % n) + 1]
+end
+
+-- Apply a binary elementwise operation with broadcasting. Broadcasting is
+-- limited to two forms: a scalar {} against anything, and a vector {N} against
+-- a tensor whose last dimension is N (the vector is repeated along the leading
+-- dimensions). The result takes the fuller shape.
 ---@param t Tensor
 ---@param op fun(number, number): number
 ---@return Tensor
 function Tensor:_binary_elementwise(t, op)
-  local self_scalar = self:_is_scalar()
-  local t_scalar = t:_is_scalar()
-  if not self_scalar and not t_scalar then
-    assert(self:_eq_shape(t))
-  end
-
-  local shape
-  local size
-  if self_scalar then
-    shape = t.shape
-    size = #t.data
-  else
-    shape = self.shape
-    size = #self.data
-  end
-
+  local shape = broadcast_output_shape(self, t)
+  local size = Tensor.numel(shape)
   local data = {}
   for i = 1, size do
-    local a = self_scalar and self.data[1] or self.data[i]
-    local b = t_scalar and t.data[1] or t.data[i]
-    data[i] = op(a, b)
+    data[i] = op(broadcast_get(self, i, size), broadcast_get(t, i, size))
   end
   return Tensor.new(shape, data)
 end
 
---- Add gradient to self (after unbroadcasing if scalar)
+-- Apply a unary elementwise operation
+---@param op fun(number): number
+---@return Tensor
+function Tensor:_unary_elementwise(op)
+  local data = {}
+  for i = 1, Tensor.numel(self.shape) do
+    data[i] = op(self.data[i])
+  end
+  return Tensor.new(self.shape, data)
+end
+
+--- Accumulate an incoming gradient into self, undoing any broadcasting that
+--- happened in the forward pass. A gradient arrives shaped like the op output;
+--- to land on self it must be summed back down to self's shape (summing every
+--- dimension self was broadcast across).
 ---@param grad Tensor
 ---@return nil
 function Tensor:_accumulate_grad(grad)
+  local g = self.gradient
+  -- Same shape: straight elementwise accumulation.
+  if self:_eq_shape(grad) then
+    for i = 1, #g.data do
+      g.data[i] = g.data[i] + grad.data[i]
+    end
+    return
+  end
+  -- Incoming scalar gradient broadcast up across self.
+  if grad:_is_scalar() then
+    for i = 1, #g.data do
+      g.data[i] = g.data[i] + grad.data[1]
+    end
+    return
+  end
+  -- Self is scalar: reduce the full incoming gradient down to it.
   if self:_is_scalar() then
-    -- Reduce the full incoming gradient down to the scalar
     local total = 0
     for i = 1, #grad.data do
       total = total + grad.data[i]
     end
-    self.gradient.data[1] = self.gradient.data[1] + total
+    g.data[1] = g.data[1] + total
     return
   end
-  -- Broadcast a scalar gradient across self, otherwise accumulate elementwise
-  local scalar_grad = grad:_is_scalar()
-  for i = 1, #self.gradient.data do
-    self.gradient.data[i] = self.gradient.data[i] + (scalar_grad and grad.data[1] or grad.data[i])
+  -- Self is a vector {N} broadcast along a tensor's last dimension: sum every
+  -- leading (broadcast) dimension back onto the N vector elements.
+  local n = self.shape[#self.shape]
+  for i = 1, #grad.data do
+    local j = ((i - 1) % n) + 1
+    g.data[j] = g.data[j] + grad.data[i]
   end
 end
 

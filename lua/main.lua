@@ -1,33 +1,42 @@
 local tensor = require("lua.tensor")
+local m = require("lua.model")
 local optimizer = require('lua.optimizer')
 
 
----@param params ParamMap
----@param x Tensor input data
----@param y Tensor actual output
----@return Tensor (specifically a loss scalar)
-local function forward(params, x, y)
-  -- We're going to fit m,b
-  -- given known correct data x -> y
-  -- Where relationship is y = m*x+b
-
-  -- Our loss function will be mean((y_p - y)^2)
-  local y_p = params['m']:mul(x):add(params['b'])
-  return y_p:sub(y):pow(tensor.scalar(2)):mean()
-end
-
-local params = {
-  m = tensor.uniform({}, -1, 1),
-  b = tensor.uniform({}, -1, 1),
-}
-local x = tensor.new({ 3 }, { 1, 2, 3 })
-local y = tensor.new({ 3 }, { 3, 5, 7 })
-
-local sgd = optimizer.new(params, 0.01)
-for i = 1, 100 do
+local x = tensor.new(
+  { 4, 2 },
+  {
+    0, 0,
+    0, 1,
+    1, 0,
+    1, 1,
+  }
+)
+local y = tensor.new(
+  { 4, 1 },
+  {
+    0,
+    1,
+    1,
+    0,
+  }
+)
+local model = m.Sequential(
+  m.Linear(2, 4),
+  m.ReLU(),
+  m.Linear(4, 1)
+)
+local sgd = optimizer.new(model:parameters(), 0.05)
+for i = 1, 5000 do
   sgd:zero()
-  local loss = forward(params, x, y)
-  loss:backwards()
+  local prediction = model:forward(x)
+  local loss = prediction
+      :sub(y)
+      :pow(tensor.scalar(2))
+      :mean()
+  loss:backward()
   sgd:step()
-  print(i, loss.data[1], params.m.data[1], params.b.data[1])
+  if i % 100 == 0 then
+    print(i, loss.data[1])
+  end
 end
