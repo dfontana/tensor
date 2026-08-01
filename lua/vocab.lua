@@ -31,6 +31,16 @@ function Vocab:encode(token)
   return ret
 end
 
+---@param tokens string[]
+---@return Tensor 1D tensor with no gradient
+function Vocab:encode_many(tokens)
+  local data = {}
+  for i, token in ipairs(tokens) do
+    data[i] = self:encode(token)
+  end
+  return tensor.new({ #tokens }, data, { require_grad = false })
+end
+
 ---@param id number
 ---@return string
 function Vocab:decode(id)
@@ -87,6 +97,4 @@ function Vocab:one_hot_many(tokens)
   )
 end
 
-return {
-  Vocab = Vocab
-}
+return Vocab

@@ -32,6 +32,27 @@ local function linear(in_feats, out_feats)
   }
 end
 
+---@param vocab Vocab
+---@param embed_size number
+local function embed(vocab, embed_size)
+  local embed_table = tensor.uniform(
+    { vocab:size(), embed_size },
+    -0.1,
+    0.1
+  )
+  return {
+    ---@param x Tensor input data
+    ---@return Tensor
+    forward = function(_, x)
+      return embed_table:gather(x)
+    end,
+    ---@return Tensor[]
+    parameters = function(_)
+      return { embed_table }
+    end
+  }
+end
+
 ---@param ... Model[]
 ---@return Model
 local function sequential(...)
@@ -77,4 +98,5 @@ return {
   Linear = linear,
   Sequential = sequential,
   ReLU = relu,
+  Embedding = embed,
 }

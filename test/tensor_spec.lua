@@ -540,6 +540,72 @@ describe("tensor cross_entropy", function()
   end)
 end)
 
+describe("tensor gather", function()
+  -- gather treats the 2D tensor as a table of rows (an embedding table
+  -- {vocab, embed_size}) and selects one row per entry of the 1D index
+  -- tensor, stacking them into a {num_indices, embed_size} result.
+  local embed = tensor.new({ 3, 2 }, { 10, 20, 30, 40, 50, 60 })
+
+  it("selects the indexed rows, producing {num_indices, embed_size}", function()
+    local out = embed:gather(tensor.new({ 2 }, { 3, 1 }))
+    assert.same({ 2, 2 }, out.shape)
+    -- row 3 then row 1
+    assert.same({ 50, 60, 10, 20 }, out.data)
+  end)
+
+  it("preserves the order of the index tensor and repeats rows on demand", function()
+    local out = embed:gather(tensor.new({ 4 }, { 2, 2, 1, 3 }))
+    assert.same({ 4, 2 }, out.shape)
+    assert.same({ 30, 40, 30, 40, 10, 20, 50, 60 }, out.data)
+  end)
+
+  it("records only the source table as parent, by identity (not the index tensor)", function()
+    local idx = tensor.new({ 2 }, { 3, 1 })
+    local out = embed:gather(idx)
+    assert.equal(1, #out.parents)
+    assert.is_true(rawequal(out.parents[1], embed))
+    assert.is_false(rawequal(out.parents[1], idx))
+  end)
+
+  it("keeps the index tensor's shape and appends embed_size for N-D indices", function()
+    -- a {2,2} index tensor gathers 4 rows and yields a {2,2,embed_size} result
+    local out = embed:gather(tensor.new({ 2, 2 }, { 1, 2, 3, 1 }))
+    assert.same({ 2, 2, 2 }, out.shape)
+    assert.same({ 10, 20, 30, 40, 50, 60, 10, 20 }, out.data)
+  end)
+
+  it("rejects gathering from a non-2D table", function()
+    assert.has_error(function() tensor.new({ 3 }, { 1, 2, 3 }):gather(tensor.new({ 1 }, { 1 })) end)
+  end)
+
+  it("scatters the upstream gradient back onto the selected rows", function()
+    local out = embed:gather(tensor.new({ 2 }, { 3, 1 }))
+    out.gradient = tensor.new(out.shape, { 1, 2, 3, 4 })
+    out:_backward()
+    -- row 3 gets {1,2}, row 1 gets {3,4}, row 2 (never selected) stays zero
+    assert.same({ 3, 2 }, embed.gradient.shape)
+    assert.same({ 3, 4, 0, 0, 1, 2 }, embed.gradient.data)
+  end)
+
+  it("sums the upstream gradient when the same row is gathered more than once", function()
+    local table_ = tensor.new({ 3, 2 }, { 10, 20, 30, 40, 50, 60 })
+    local out = table_:gather(tensor.new({ 2 }, { 1, 1 }))
+    out.gradient = tensor.new(out.shape, { 1, 2, 3, 4 })
+    out:_backward()
+    -- row 1 is selected twice, so its gradient is the sum { 1+3, 2+4 }
+    assert.same({ 4, 6, 0, 0, 0, 0 }, table_.gradient.data)
+  end)
+
+  it("accumulates onto a pre-existing table gradient instead of overwriting it", function()
+    local table_ = tensor.new({ 3, 2 }, { 10, 20, 30, 40, 50, 60 })
+    table_.gradient = tensor.new(table_.shape, { 100, 100, 100, 100, 100, 100 })
+    local out = table_:gather(tensor.new({ 1 }, { 2 }))
+    out.gradient = tensor.new(out.shape, { 1, 2 })
+    out:_backward()
+    assert.same({ 100, 100, 101, 102, 100, 100 }, table_.gradient.data)
+  end)
+end)
+
 describe("tensor backward propagation", function()
   local function clone_data(data)
     local out = {}

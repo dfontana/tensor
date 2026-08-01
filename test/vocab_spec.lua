@@ -1,8 +1,5 @@
-local tensor = require("lua.tensor")
-local embed = require("lua.embed")
+local Vocab = require("lua.vocab")
 local assert = require("luassert")
-
-local Vocab = embed.Vocab
 
 describe("Vocab:size", function()
   it("reports the number of tokens it was constructed with", function()

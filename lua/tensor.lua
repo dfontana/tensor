@@ -133,6 +133,15 @@ function Tensor:_index(row, col)
   return self.data[offset]
 end
 
+---@param row number Row
+---@param col number Column
+---@param v number Value
+function Tensor:_set(row, col, v)
+  local offset = index_of(row, col, self.shape)
+  assert(#self.data >= offset, "index out of data range: " .. offset .. " (data len: " .. #self.data .. ")")
+  self.data[offset] = v
+end
+
 function Tensor:_is_scalar()
   return #self.shape == 0
 end
@@ -405,6 +414,42 @@ function Tensor:argmax(axis)
   end)
 
   return Tensor.new(output_shape, data, { require_grad = false })
+end
+
+---@param t Tensor
+---@return Tensor
+function Tensor:gather(t)
+  assert(#self.shape == 2, "gather only works on 2D tensor")
+  local embed_size = self.shape[2]
+
+  local data = {}
+  for batch = 1, Tensor.numel(t.shape) do
+    local row = t.data[batch]
+    for col = 1, self.shape[2] do
+      table.insert(data, self:_index(row, col))
+    end
+  end
+  local out_shape = {}
+  for i = 1, #t.shape do
+    table.insert(out_shape, t.shape[i])
+  end
+  table.insert(out_shape, embed_size)
+  local ret = Tensor.new(out_shape, data)
+  ret.parents = { self }
+  ret._backward = function()
+    local grad = Tensor.zeroes(self.shape, { require_grad = false })
+    for batch = 1, Tensor.numel(t.shape) do
+      -- Row is the loc in this tensor, but batch is in the upstream
+      local row = t.data[batch]
+      for col = 1, embed_size do
+        local output_offset = (batch - 1) * embed_size + col
+        local output_grad = ret.gradient.data[output_offset]
+        grad:_set(row, col, grad:_index(row, col) + output_grad)
+      end
+    end
+    self:_accumulate_grad(grad)
+  end
+  return ret
 end
 
 ---@param t Tensor (scalar)

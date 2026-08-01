@@ -66,9 +66,28 @@ Representing inputs:
 
 If 'cat' in out one-hot representation is 10,000 numbers long (because we have 10k tokens in our vocab), then it's stating that only those tokens 'exist' and no other tokens relate to them. That's not _really_ true --> embeddeding picks a different length agnostic to the vocabularly (say 32 numbers) and each word ("cat", "dog") is trained upon. Those vectors in N-dimensional space can now convey similarity to each other (like a "dog" and "cat" are animals, or common household pets, etc) vs dissimilar (a "cat" is not a "car" but in training it may reveal a "cat" can be jokingly refered to as a "car" and there-fore a little more similar than a "cat" is to a "cabinet").
 
-This embedding becomes a trainable table: {vocab-size, embed-length} -> in this example that would be 10k rows of 32 length instead of 10k rows of 10k length. What makes this interesting (and important for getting an embedding back to a token) is that you could multiply the one-shot represetation by the embedding table and get back the embedding for that token.
+This embedding becomes a trainable table: {vocab-size, embed-length} -> in this example that would be 10k rows of 32 length instead of 10k rows of 10k length. What makes this interesting (and important for getting an embedding back to a token) is that you could multiply the one-shot represetation by the embedding table and get back the embedding for that token. That's because only one index has weight 1 and rest are 0 -- so you get just that one row back.
 
-More on this another time though, for now we start simple with one-shots. We can later add embeddings since we'll go OneShot -> Embed -> Model -> Logits -> Unembed (I think? tbd).
+When it comes to learning, the interesting part is a token repeating in your input gets it's gradients updated multiple times; and any token NOT in your input gets nothing because all their weights are 0. This reveals a stark inefficiency -- if we just naively backprop we're updating a bunch of 0 gradients needlessly.
+
+So the 'Embedding' layer does a avoids the mat-mul waste by instead doing an _index_ operation -- indexing the gradient matrix by the token's row (to access just that token's embedding) makes it the only gradient that need updating. All others can be skipped. It's almost like selecting the Embedding table's rows from your input batch and stacking them before feeding to the model, but importantly it's _one_ tensor node not N independent nodes. This if called _gather_ in many cases.
+
+Because embeddings get learned during training, as similar tokens get used over and over the model naturally keeps updating their vectors similarly which pushes them closer together in vector space. 
+
+#### Application
+
+- You build a matrix of Vocab size rows x Embed dimension width, of random values. These will get trained while running model training -- they don't get trained separately. But this table is a parameter to the model itself (returned by parameters()).
+  - In some cases they'll be pretrained and either frozen (not updated) or allowed to keep training ("fine-tuning")
+- With your input tokens you one-shot them into a matrix -> pass them into the Embedding layer to avoid sparse matrix problem -> forward pass through the model -> final layer is then the length of your vocab so you get your logits.
+- Softmax on the logit layer to then sample for the next token.
+
+```
+token ID
+-> embedding row
+-> rest of model
+-> vocabulary logits
+-> cross-entropy loss
+```
 
 ## Logits & Softmax, Loss
 
