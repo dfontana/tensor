@@ -17,6 +17,43 @@ local function train(model, input, loss_fn)
   end
 end
 
+local function evals()
+  local data = {
+    correct = 0,
+    wrong = 0,
+    samples = 0,
+  }
+
+  local function zip(a, b)
+    local i = 0
+    return function()
+      i = i + 1
+      if a[i] ~= nil and b[i] ~= nil then
+        return a[i], b[i]
+      end
+    end
+  end
+
+  local function update(acts, preds)
+    for act, pred in zip(acts, preds) do
+      data.samples = data.samples + 1
+      if act == pred then
+        data.correct = data.correct + 1
+      else
+        data.wrong = data.wrong + 1
+      end
+    end
+  end
+
+  local function calc()
+    local pRight = 100 * (data.correct / data.samples)
+    local pWrong = 100 * (data.wrong / data.samples)
+    print(pRight .. "% correct, " .. pWrong .. "% wrong")
+  end
+
+  return calc, update
+end
+
 -- Relu Example: learning xor operation
 local function learn_xor()
   local x = tensor.new({ 4, 2 }, { 0, 0, 0, 1, 1, 0, 1, 1, })
@@ -66,7 +103,6 @@ local function learn_embeds()
     "green",
     "blue",
   })
-  local inf = vocab:encode_many({ "red" })
   local targets = vocab:one_hot_many({
     "green",
     "blue",
@@ -78,14 +114,48 @@ local function learn_embeds()
     m.Linear(32, vocab:size())
   )
   train(net, inputIds, function(pred) return pred:cross_entropy(targets, -1) end)
-  local tokens = vocab:decode_many(net
-    :forward(inf)
-    -- Technically softmax not needed since this is bigram and
-    -- not sampling the next token
-    -- :softmax(-1)
-    :argmax(-1)
-  )
-  print("'red' predicts: " .. tokens[1])
+  local function infer(t)
+    return vocab:decode_many(net
+      :forward(t)
+      -- Technically softmax not needed since this is bigram and
+      -- not sampling the next token
+      -- :softmax(-1)
+      :argmax(-1)
+    )
+  end
+
+  return vocab, infer
 end
 
-learn_embeds()
+local function sample_embed()
+  local function randkey(tbl)
+    local keys = {}
+    for key in pairs(tbl) do
+      keys[#keys + 1] = key
+    end
+    if #keys == 0 then
+      return nil
+    end
+    return keys[math.random(#keys)]
+  end
+
+  local vocab, infer = learn_embeds()
+  local rep, ev = evals()
+  local mapping = {
+    red = "green",
+    green = "blue",
+    blue = "red",
+  }
+  for _ = 0, 100 do
+    local input = {}
+    local actual = {}
+    for _ = 0, 100 do
+      local inp = randkey(mapping)
+      table.insert(input, inp)
+      table.insert(actual, mapping[inp])
+    end
+    local results = infer(vocab:encode_many(input))
+    ev(actual, results)
+  end
+  rep()
+end
