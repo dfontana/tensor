@@ -337,6 +337,209 @@ describe("tensor operations with vector operands (broadcasting)", function()
   end)
 end)
 
+describe("tensor softmax", function()
+  local function slice_sum(data, from, to)
+    local total = 0
+    for i = from, to do total = total + data[i] end
+    return total
+  end
+
+  it("turns a vector into a probability distribution that sums to 1", function()
+    local v = tensor.new({ 3 }, { 1, 2, 3 })
+    local p = v:softmax(1)
+    assert.same({ 3 }, p.shape)
+    assert.near(1, slice_sum(p.data, 1, 3), 1e-12)
+    for _, x in ipairs(p.data) do
+      assert.is_true(x > 0 and x < 1)
+    end
+  end)
+
+  it("matches the closed-form softmax for a small vector", function()
+    -- softmax({1,2,3}) = exp(x) / sum(exp(x))
+    local v = tensor.new({ 3 }, { 1, 2, 3 })
+    local denom = math.exp(1) + math.exp(2) + math.exp(3)
+    local expected = { math.exp(1) / denom, math.exp(2) / denom, math.exp(3) / denom }
+    local p = v:softmax(1)
+    for i = 1, 3 do
+      assert.near(expected[i], p.data[i], 1e-12)
+    end
+  end)
+
+  it("preserves the order of the inputs (monotonic in the logits)", function()
+    local p = tensor.new({ 4 }, { -1, 0, 2, 5 }):softmax(1)
+    for i = 2, 4 do
+      assert.is_true(p.data[i] > p.data[i - 1])
+    end
+  end)
+
+  it("is invariant to adding a constant to every logit (shift invariance)", function()
+    local base = tensor.new({ 3 }, { 1, 2, 3 }):softmax(1)
+    local shifted = tensor.new({ 3 }, { 1001, 1002, 1003 }):softmax(1)
+    for i = 1, 3 do
+      assert.near(base.data[i], shifted.data[i], 1e-12)
+    end
+  end)
+
+  it("stays numerically stable for large logits (no overflow to nan/inf)", function()
+    -- max-subtraction inside softmax must keep exp() finite even here.
+    local p = tensor.new({ 3 }, { 1000, 1001, 1002 }):softmax(1)
+    assert.near(1, slice_sum(p.data, 1, 3), 1e-12)
+    for _, x in ipairs(p.data) do
+      assert.is_true(x == x and x < math.huge)
+    end
+  end)
+
+  it("normalizes each slice independently along the chosen axis", function()
+    local m = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
+    -- axis 2: every row is its own distribution
+    local rows = m:softmax(2)
+    assert.near(1, slice_sum(rows.data, 1, 3), 1e-12)
+    assert.near(1, slice_sum(rows.data, 4, 6), 1e-12)
+    -- axis 1: every column is its own distribution
+    local cols = m:softmax(1)
+    assert.near(1, cols.data[1] + cols.data[4], 1e-12)
+    assert.near(1, cols.data[2] + cols.data[5], 1e-12)
+    assert.near(1, cols.data[3] + cols.data[6], 1e-12)
+  end)
+
+  it("accepts a negative axis, resolving it from the end", function()
+    local m = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
+    assert.equal(m:softmax(2), m:softmax(-1))
+  end)
+
+  it("sharpens toward the argmax as temperature drops and flattens as it rises", function()
+    local logits = tensor.new({ 3 }, { 1, 2, 3 })
+    local cold = logits:softmax(1, 0.1)
+    local hot = logits:softmax(1, 100)
+    -- low temperature concentrates mass on the largest logit
+    assert.is_true(cold.data[3] > 0.99)
+    -- high temperature pushes toward the uniform 1/3
+    for i = 1, 3 do
+      assert.near(1 / 3, hot.data[i], 1e-2)
+    end
+  end)
+
+  it("rejects a non-positive temperature", function()
+    local logits = tensor.new({ 3 }, { 1, 2, 3 })
+    assert.has_error(function() logits:softmax(1, 0) end)
+    assert.has_error(function() logits:softmax(1, -1) end)
+  end)
+
+  it("records its single input as parent, by identity", function()
+    local v = tensor.new({ 3 }, { 1, 2, 3 })
+    local p = v:softmax(1)
+    assert.equal(1, #p.parents)
+    assert.is_true(rawequal(p.parents[1], v))
+  end)
+end)
+
+describe("tensor argmax", function()
+  it("returns the index of the largest value in a vector, reducing to a scalar shape", function()
+    local v = tensor.new({ 4 }, { -1, 3, 2, 0 })
+    local idx = v:argmax(1)
+    assert.same({}, idx.shape)
+    assert.same({ 2 }, idx.data)
+  end)
+
+  it("breaks ties toward the first occurrence", function()
+    local v = tensor.new({ 4 }, { 5, 5, 1, 5 })
+    assert.same({ 1 }, v:argmax(1).data)
+  end)
+
+  it("reduces each row independently along the last axis", function()
+    local m = tensor.new({ 2, 3 }, { 1, 2, 3, 6, 5, 4 })
+    local idx = m:argmax(2)
+    assert.same({ 2 }, idx.shape)
+    assert.same({ 3, 1 }, idx.data)
+  end)
+
+  it("reduces each column independently along the first axis", function()
+    local m = tensor.new({ 2, 3 }, { 1, 9, 3, 4, 5, 6 })
+    local idx = m:argmax(1)
+    assert.same({ 3 }, idx.shape)
+    -- columns: {1,4}->2, {9,5}->1, {3,6}->2
+    assert.same({ 2, 1, 2 }, idx.data)
+  end)
+
+  it("accepts a negative axis, resolving it from the end", function()
+    local m = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
+    assert.equal(m:argmax(2), m:argmax(-1))
+  end)
+
+  it("reduces the chosen axis of a 3-D tensor", function()
+    local t = tensor.new({ 2, 2, 2 }, { 2, 1, 3, 4, 8, 7, 5, 6 })
+    local idx = t:argmax(3)
+    assert.same({ 2, 2 }, idx.shape)
+    -- pairs along the last axis: {2,1}->1, {3,4}->2, {8,7}->1, {5,6}->2
+    assert.same({ 1, 2, 1, 2 }, idx.data)
+  end)
+
+  it("does not participate in autograd (no parents, no gradient)", function()
+    local v = tensor.new({ 3 }, { 1, 2, 3 })
+    local idx = v:argmax(1)
+    assert.same({}, idx.parents)
+    assert.is_nil(idx.gradient)
+  end)
+
+  it("rejects an axis outside the tensor's rank", function()
+    local m = tensor.new({ 2, 3 }, { 1, 2, 3, 4, 5, 6 })
+    assert.has_error(function() m:argmax(3) end)
+    assert.has_error(function() m:argmax(0) end)
+  end)
+end)
+
+describe("tensor cross_entropy", function()
+  it("reduces to a scalar loss", function()
+    local logits = tensor.new({ 1, 3 }, { 0, 0, 0 })
+    local target = tensor.new({ 1, 3 }, { 1, 0, 0 })
+    local loss = logits:cross_entropy(target, 2)
+    assert.same({}, loss.shape)
+  end)
+
+  it("equals -log(prob of the true class) for a one-hot target on a single slice", function()
+    -- uniform logits -> each class prob 1/3 -> loss = -log(1/3) = log 3
+    local logits = tensor.new({ 1, 3 }, { 0, 0, 0 })
+    local target = tensor.new({ 1, 3 }, { 1, 0, 0 })
+    assert.near(math.log(3), logits:cross_entropy(target, 2).data[1], 1e-12)
+  end)
+
+  it("matches -sum(target * log_softmax) for arbitrary logits", function()
+    local logits = tensor.new({ 1, 3 }, { 2, 1, 0 })
+    local target = tensor.new({ 1, 3 }, { 1, 0, 0 })
+    local denom = math.exp(2) + math.exp(1) + math.exp(0)
+    local expected = -math.log(math.exp(2) / denom)
+    assert.near(expected, logits:cross_entropy(target, 2).data[1], 1e-12)
+  end)
+
+  it("shrinks as the logit for the true class grows (more confidence, less loss)", function()
+    local target = tensor.new({ 1, 3 }, { 1, 0, 0 })
+    local unsure = tensor.new({ 1, 3 }, { 0, 0, 0 }):cross_entropy(target, 2)
+    local confident = tensor.new({ 1, 3 }, { 5, 0, 0 }):cross_entropy(target, 2)
+    assert.is_true(confident.data[1] < unsure.data[1])
+  end)
+
+  it("averages the loss across independent slices", function()
+    -- Two identical rows -> the mean loss equals a single row's loss.
+    local logits = tensor.new({ 2, 3 }, { 0, 0, 0, 0, 0, 0 })
+    local target = tensor.new({ 2, 3 }, { 1, 0, 0, 1, 0, 0 })
+    assert.near(math.log(3), logits:cross_entropy(target, 2).data[1], 1e-12)
+  end)
+
+  it("rejects a target whose shape does not match the logits", function()
+    local logits = tensor.new({ 1, 3 }, { 0, 0, 0 })
+    local target = tensor.new({ 1, 2 }, { 1, 0 })
+    assert.has_error(function() logits:cross_entropy(target, 2) end)
+  end)
+
+  it("records only the logits as parent, by identity (not the target)", function()
+    local logits = tensor.new({ 1, 3 }, { 0, 0, 0 })
+    local target = tensor.new({ 1, 3 }, { 1, 0, 0 })
+    local loss = logits:cross_entropy(target, 2)
+    assert.equal(1, #loss.parents)
+    assert.is_true(rawequal(loss.parents[1], logits))
+  end)
+end)
+
 describe("tensor backward propagation", function()
   local function clone_data(data)
     local out = {}
@@ -571,6 +774,39 @@ describe("tensor backward propagation", function()
     it("mean", function()
       assert_gradcheck(function(t) return t[1]:mean() end,
         { a }, { 1.7 }, 1e-4, 1e-3)
+    end)
+
+    -- softmax and cross_entropy leave the target/actual out of the graph, so
+    -- the gradcheck only differentiates the logits (the sole parent).
+    it("softmax (single slice)", function()
+      local logits = tensor.new({ 1, 3 }, { 0.5, -1, 2 })
+      assert_gradcheck(function(t) return t[1]:softmax(2) end,
+        { logits }, { 1, -2, 0.5 }, 1e-4, 1e-3)
+    end)
+
+    it("softmax (multiple slices along the axis)", function()
+      assert_gradcheck(function(t) return t[1]:softmax(2) end,
+        { a }, { 1, -2, 0.5, 3, -1, 2 }, 1e-4, 1e-3)
+    end)
+
+    it("softmax (non-default temperature)", function()
+      local logits = tensor.new({ 1, 3 }, { 0.5, -1, 2 })
+      assert_gradcheck(function(t) return t[1]:softmax(2, 0.5) end,
+        { logits }, { 1, -2, 0.5 }, 1e-4, 1e-3)
+    end)
+
+    it("cross_entropy (single slice)", function()
+      local target = tensor.new({ 1, 3 }, { 1, 0, 0 })
+      assert_gradcheck(function(t) return t[1]:cross_entropy(target, 2) end,
+        { tensor.new({ 1, 3 }, { 0.5, -1, 2 }) }, { 1 }, 1e-4, 1e-3)
+    end)
+
+    it("cross_entropy (multiple slices, soft targets)", function()
+      -- Each row's target is a valid distribution summing to 1, which is what
+      -- the analytic gradient (prob - target)/slices assumes.
+      local target = tensor.new({ 2, 3 }, { 1, 0, 0, 0.2, 0.3, 0.5 })
+      assert_gradcheck(function(t) return t[1]:cross_entropy(target, 2) end,
+        { a }, { 1.3 }, 1e-4, 1e-3)
     end)
   end)
 

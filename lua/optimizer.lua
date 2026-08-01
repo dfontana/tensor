@@ -1,3 +1,4 @@
+local tensor = require("lua.tensor")
 ---@alias ParamMap {[string]: Tensor}
 
 ---@class Optimizer
@@ -37,4 +38,17 @@ function Optimizer:step()
   end
 end
 
-return Optimizer
+---@param pred Tensor Prediction value
+---@param actual Tensor Actual value
+---@return Tensor (scaler)
+local function mean_squared(pred, actual)
+  return pred
+      :sub(actual)
+      :pow(tensor.scalar(2))
+      :mean()
+end
+
+return {
+  Optimizer = Optimizer,
+  mean_squared = mean_squared,
+}

@@ -10,7 +10,7 @@ describe("Optimizer:zero", function()
     }
     params.m.gradient = tensor.new(params.m.shape, { 9, 9, 9, 9, 9, 9 })
     params.b.gradient = tensor.scalar(9)
-    optimizer.new(params, 0.01):zero()
+    optimizer.Optimizer.new(params, 0.01):zero()
     for i = 1, #params.m.gradient.data do
       assert.equal(0, params.m.gradient.data[i])
     end
@@ -26,10 +26,49 @@ describe("Optimizer:step", function()
     }
     params.m.gradient = tensor.new(params.m.shape, { 1, 1, 1 })
     params.b.gradient = tensor.scalar(2)
-    optimizer.new(params, 0.1):step()
+    optimizer.Optimizer.new(params, 0.1):step()
     -- p := p - lr * grad
     assert.same({ 0.9, 1.9, 2.9 }, params.m.data)
     assert.near(9.8, params.b.data[1], 1e-9)
+  end)
+end)
+
+describe("optimizer.mean_squared", function()
+  it("reduces to a scalar tensor holding the mean of the squared errors", function()
+    local pred = tensor.new({ 1, 3 }, { 1, 2, 3 })
+    local actual = tensor.new({ 1, 3 }, { 0, 0, 0 })
+    local loss = optimizer.mean_squared(pred, actual)
+    assert.same({}, loss.shape)
+    -- mean(1^2, 2^2, 3^2) = 14 / 3
+    assert.near(14 / 3, loss.data[1], 1e-9)
+  end)
+
+  it("is zero exactly when the prediction equals the target", function()
+    local pred = tensor.new({ 2, 2 }, { 1, 2, 3, 4 })
+    local actual = tensor.new({ 2, 2 }, { 1, 2, 3, 4 })
+    assert.equal(0, optimizer.mean_squared(pred, actual).data[1])
+  end)
+
+  it("is symmetric in prediction and target (the error is squared)", function()
+    local a = tensor.new({ 1, 3 }, { 1, 2, 3 })
+    local b = tensor.new({ 1, 3 }, { 4, 0, 5 })
+    assert.near(
+      optimizer.mean_squared(a, b).data[1],
+      optimizer.mean_squared(b, a).data[1],
+      1e-9)
+  end)
+
+  it("backpropagates the gradient 2*(pred - actual)/n onto the prediction", function()
+    -- Composed from sub/pow/mean, each already gradchecked in tensor_spec;
+    -- this pins the composition's end-to-end gradient at the leaf.
+    local pred = tensor.new({ 1, 3 }, { 1, 2, 3 })
+    local actual = tensor.new({ 1, 3 }, { 0, 0, 0 })
+    local loss = optimizer.mean_squared(pred, actual)
+    loss:backward()
+    -- 2 * {1, 2, 3} / 3
+    assert.near(2 / 3, pred.gradient.data[1], 1e-9)
+    assert.near(4 / 3, pred.gradient.data[2], 1e-9)
+    assert.near(6 / 3, pred.gradient.data[3], 1e-9)
   end)
 end)
 
@@ -46,7 +85,7 @@ describe("Optimizer end-to-end (linear regression, the milestone goal)", functio
       m = tensor.new({}, { 0 }),
       b = tensor.new({}, { 0 }),
     }
-    local sgd = optimizer.new(params, 0.02)
+    local sgd = optimizer.Optimizer.new(params, 0.02)
     local previous = math.huge
     local last
     for _ = 1, 8 do
@@ -70,7 +109,7 @@ describe("Optimizer end-to-end (linear regression, the milestone goal)", functio
       m = tensor.new({}, { 0 }),
       b = tensor.new({}, { 0 }),
     }
-    local sgd = optimizer.new(params, 0.02)
+    local sgd = optimizer.Optimizer.new(params, 0.02)
     local monotonic = true
     local previous = math.huge
     for _ = 1, 8 do

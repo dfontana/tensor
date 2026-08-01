@@ -280,6 +280,133 @@ function Tensor:relu()
   return ret
 end
 
+---Compute stable softmax probabilities and log-probabilities without
+---creating tensors or graph nodes.
+---@param tensor Tensor
+---@param axis number
+---@param temp number
+---@return Data probabilities
+---@return Data log_probabilities
+local function softmax_values(tensor, axis, temp)
+  local probabilities = {}
+  local log_probabilities = {}
+
+  tensor:_each_axis_slice(axis, function(start, width, stride)
+    local max_value = -math.huge
+    for i = 0, width - 1 do
+      max_value = math.max(max_value, tensor.data[start + i * stride])
+    end
+
+    local total = 0
+    for i = 0, width - 1 do
+      local offset = start + i * stride
+      probabilities[offset] = math.exp((tensor.data[offset] - max_value) / temp)
+      total = total + probabilities[offset]
+    end
+
+    local log_total = math.log(total)
+    for i = 0, width - 1 do
+      local offset = start + i * stride
+      probabilities[offset] = probabilities[offset] / total
+      log_probabilities[offset] = (tensor.data[offset] - max_value) / temp - log_total
+    end
+  end)
+
+  return probabilities, log_probabilities
+end
+
+function Tensor:softmax(axis, t)
+  axis = self:_norm_axis(axis)
+
+  local temp = t or 1.0
+  assert(temp > 0, "temperature must be positive")
+
+  local data, _ = softmax_values(self, axis, temp)
+  local ret = Tensor.new(self.shape, data)
+  ret.parents = { self }
+  ret._backward = function()
+    local grad_data = {}
+
+    self:_each_axis_slice(axis, function(start, width, stride)
+      local dot = 0
+      for i = 0, width - 1 do
+        local offset = start + i * stride
+        dot = dot + ret.gradient.data[offset] * ret.data[offset]
+      end
+
+      for i = 0, width - 1 do
+        local offset = start + i * stride
+        grad_data[offset] = (ret.data[offset] / temp)
+            * (ret.gradient.data[offset] - dot)
+      end
+    end)
+
+    self:_accumulate_grad(Tensor.new(self.shape, grad_data, { require_grad = false }))
+  end
+
+  return ret
+end
+
+function Tensor:cross_entropy(actual, axis)
+  assert(self:_eq_shape(actual), "shape mismatch")
+  axis = self:_norm_axis(axis)
+
+  local probabilities, log_probabilities = softmax_values(self, axis, 1.0)
+
+  local total_loss = 0
+  for i = 1, #self.data do
+    total_loss = total_loss - actual.data[i] * log_probabilities[i]
+  end
+
+  local slice_count = #self.data / self.shape[axis]
+  local ret = Tensor.scalar(total_loss / slice_count)
+  ret.parents = { self }
+  ret._backward = function()
+    local grad_data = {}
+    local upstream = ret.gradient.data[1]
+    for i = 1, #self.data do
+      grad_data[i] = upstream
+          * (probabilities[i] - actual.data[i])
+          / slice_count
+    end
+    self:_accumulate_grad(Tensor.new(self.shape, grad_data, { require_grad = false }))
+  end
+
+  return ret
+end
+
+---Return the index of the largest value along an axis.
+---The output shape is the input shape with that axis removed.
+---@param axis number 1-based axis; negative counts from the end
+---@return Tensor integer-ID tensor; does not participate in autograd
+function Tensor:argmax(axis)
+  axis = self:_norm_axis(axis)
+
+  local output_shape = {}
+  for dim = 1, #self.shape do
+    if dim ~= axis then
+      table.insert(output_shape, self.shape[dim])
+    end
+  end
+
+  local data = {}
+  self:_each_axis_slice(axis, function(start, width, stride)
+    local best_index = 1
+    local best_value = self.data[start]
+    for i = 1, width - 1 do
+      local value = self.data[start + i * stride]
+      -- Ties choose the first occurrence.
+      if value > best_value then
+        best_value = value
+        best_index = i + 1
+      end
+    end
+    table.insert(data, best_index)
+  end)
+
+  return Tensor.new(output_shape, data, { require_grad = false })
+end
+
 ---@param t Tensor (scalar)
 ---@return Tensor
 function Tensor:pow(t)
@@ -355,6 +482,28 @@ function Tensor:sum()
     self:_accumulate_grad(ret.gradient)
   end
   return ret
+end
+
+---Call fn once for each slice along axis.
+---start is the first 1-based flat offset; stride moves within the slice.
+---@param axis number
+---@param fn fun(start: number, width: number, stride: number)
+function Tensor:_each_axis_slice(axis, fn)
+  local width = self.shape[axis]
+  local outer = 1
+  local inner = 1
+  for dim = 1, axis - 1 do
+    outer = outer * self.shape[dim]
+  end
+  for dim = axis + 1, #self.shape do
+    inner = inner * self.shape[dim]
+  end
+  for outer_index = 0, outer - 1 do
+    for inner_index = 0, inner - 1 do
+      local start = outer_index * width * inner + inner_index + 1
+      fn(start, width, inner)
+    end
+  end
 end
 
 ---Compute the broadcast output shape against the given Tensors. Only two forms are
@@ -442,6 +591,9 @@ end
 ---@return nil
 function Tensor:_accumulate_grad(grad)
   local g = self.gradient
+  if g == nil then
+    return
+  end
   -- Same shape: straight elementwise accumulation.
   if self:_eq_shape(grad) then
     for i = 1, #g.data do
@@ -472,6 +624,16 @@ function Tensor:_accumulate_grad(grad)
     local j = ((i - 1) % n) + 1
     g.data[j] = g.data[j] + grad.data[i]
   end
+end
+
+---@param axis number
+---@return number normalized positive axis
+function Tensor:_norm_axis(axis)
+  if axis < 0 then
+    axis = #self.shape + axis + 1
+  end
+  assert(axis >= 1 and axis <= #self.shape, "axis out of range")
+  return axis
 end
 
 ---@return string
