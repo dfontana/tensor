@@ -1,11 +1,43 @@
 [tools]
 lua = "latest"
 lua-language-server = "latest"
+rust = "latest"
+
+[tasks."build:native"]
+description = "Format, lint, and compile the native Rust module"
+sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs", ".cargo/config.toml"]
+outputs = ["target/debug/libtensor_native.*"]
+run = """
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo build
+"""
+
+[tasks."release:native"]
+description = "Build the native Lua module used by Fennel"
+sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs", ".cargo/config.toml"]
+outputs = ["build/lua/tensor_native.so"]
+run = """
+cargo build --release
+mkdir -p build/lua
+case "$(uname -s)" in
+  Darwin) artifact=target/release/libtensor_native.dylib ;;
+  Linux) artifact=target/release/libtensor_native.so ;;
+  *) printf '%s\\n' "Unsupported native module platform: $(uname -s)" >&2; exit 1 ;;
+esac
+cp "$artifact" build/lua/tensor_native.so
+"""
+
+[tasks."test:native"]
+description = "Run Rust unit tests"
+run = "cargo test"
 
 [tasks.test]
 description = "Run the tensor test suite"
-run = "busted -e 'require(\"fennel\").install(); require(\"test.helper\")' --loaders fennel test"
+depends = ["release:native"]
+run = "LUA_CPATH='./build/lua/?.so;;' busted -e 'require(\"fennel\").install(); require(\"test.helper\")' --loaders fennel test"
 
 [tasks.main]
 description = "Run the tensor example"
-run = "fennel fnl/main.fnl"
+depends = ["release:native"]
+run = "LUA_CPATH='./build/lua/?.so;;' fennel fnl/main.fnl"
