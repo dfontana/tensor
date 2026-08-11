@@ -1,0 +1,11 @@
+[package]
+name = "tensor_native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mlua = { version = "0.12", features = ["lua55", "module"] }

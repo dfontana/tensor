@@ -1,0 +1,6 @@
+# Lua resolves the Lua C API symbols when it loads the module on macOS.
+[target.aarch64-apple-darwin]
+rustflags = [
+  "-C", "link-arg=-undefined",
+  "-C", "link-arg=dynamic_lookup",
+]
