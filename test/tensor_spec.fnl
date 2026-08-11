@@ -16,16 +16,16 @@
       (fn []
         (assert.equal
           (tensor.new [3 2] [1 4 2 5 3 6])
-          (tensor.transpose a))))
+          (tensor.transpose a 1 2))))
 
     (it "satisfies matrix identities"
       (fn []
         (let [b (tensor.new [3 4] [7 8 9 10 11 12 13 14 15 16 17 18])
               i (tensor.new [3 3] [1 0 0 0 1 0 0 0 1])
-              cases [[(tensor.transpose (tensor.transpose a)) a]
+              cases [[(tensor.transpose (tensor.transpose a 1 2) 1 2) a]
                      [(tensor.matmul a i) a]
-                     [(tensor.transpose (tensor.matmul a b))
-                      (tensor.matmul (tensor.transpose b) (tensor.transpose a))]]]
+                     [(tensor.transpose (tensor.matmul a b) 1 2)
+                      (tensor.matmul (tensor.transpose b 1 2) (tensor.transpose a 1 2))]]]
           (each [_ entry (ipairs cases)]
             (assert.equal (. entry 2) (. entry 1))))))
 
@@ -85,13 +85,13 @@
       (fn []
         (let [scalar (tensor.scalar 21)]
           (assert.equal scalar (tensor.sum a))
-          (assert.equal (tensor.sum a) (tensor.sum (tensor.transpose a))))))
+          (assert.equal (tensor.sum a) (tensor.sum (tensor.transpose a 1 2))))))
 
     (it "computes means as scalar tensors"
       (fn []
         (let [scalar (tensor.scalar 3.5)]
           (assert.equal scalar (tensor.mean a))
-          (assert.equal (tensor.mean a) (tensor.mean (tensor.transpose a))))))
+          (assert.equal (tensor.mean a) (tensor.mean (tensor.transpose a 1 2))))))
 
     (it "compares tensors"
       (fn []
@@ -120,7 +120,7 @@
 
     (it "records exactly the inputs, by identity, as parents for unary ops"
       (fn []
-        (let [cases [[(tensor.transpose a) a]
+        (let [cases [[(tensor.transpose a 1 2) a]
                      [(tensor.sum a) a]
                      [(tensor.mean a) a]
                      [(tensor.relu a) a]]]
@@ -172,7 +172,7 @@
 
     (it "gives every non-leaf tensor a nonzero-length parents table"
       (fn []
-        (let [results [(tensor.matmul a b) (tensor.transpose a) (tensor.mul a c)
+        (let [results [(tensor.matmul a b) (tensor.transpose a 1 2) (tensor.mul a c)
                        (tensor.add a c) (tensor.sub a c) (tensor.scale a s)
                        (tensor.pow a s) (tensor.mean a) (tensor.sum a) (tensor.relu a)]]
           (each [_ result (ipairs results)]
@@ -235,10 +235,9 @@
           (each [_ entry (ipairs cases)]
             (assert.equal (. entry 2) (. entry 1))))))
 
-    (it "leaves a scalar unchanged under transpose"
+    (it "rejects transpose on a scalar because it has no axes"
       (fn []
-        (assert.equal three (tensor.transpose three))
-        (assert.same [] (. (tensor.transpose three) :shape))))
+        (assert.has_error (fn [] (tensor.transpose three 1 2)))))
 
     (it "reduces a scalar tensor to itself under sum and mean"
       (fn []
@@ -686,7 +685,7 @@
           (fn []
             ; Ops-as-data: instead of a per-node `_backward` closure, a non-leaf
             ; carries an `:op` tag that backward-step! dispatches on (leaves are :noop).
-            (let [results [(tensor.matmul a b34) (tensor.transpose a)
+            (let [results [(tensor.matmul a b34) (tensor.transpose a 1 2)
                            (tensor.mul a c) (tensor.add a c) (tensor.sub a c)
                            (tensor.scale a s) (tensor.pow a s) (tensor.mean a)
                            (tensor.sum a) (tensor.relu a)]]
@@ -746,7 +745,7 @@
         (it "accumulates into an existing parent gradient for transpose instead of overwriting"
           (fn []
             (let [y (tensor.new [2 3] [1 2 3 4 5 6])
-                  t (tensor.transpose y)]
+                  t (tensor.transpose y 1 2)]
               (set y.gradient (tensor.new y.shape [100 100 100 100 100 100]))
               (set t.gradient (tensor.new t.shape [1 2 3 4 5 6]))
               (tensor.backward-step! t)
@@ -782,7 +781,7 @@
         (it "transpose"
           (fn []
             (assert-gradcheck
-              (fn [ts] (tensor.transpose (. ts 1)))
+              (fn [ts] (tensor.transpose (. ts 1) 1 2))
               [a] [1 -2 0.5 3 -1 2] 0.0001 0.001)))
 
         (it "pow"
@@ -1195,6 +1194,118 @@
             (tensor.backward! loss)
             (assert.equal 101 (. x.gradient.data 1))))))))
 
+; These are contract tests for the stride-based N-D milestone. They intentionally
+; exercise public behavior rather than asserting storage layout or allocations.
+; They fail until strides, generalized broadcasting, and their backward rules exist.
+(describe "N-D stride tensor behavior"
+  (fn []
+    (it "transposes arbitrary axis pairs and preserves logical values through an elementwise op"
+      (fn []
+        (let [x (tensor.new [2 2 3] [1 2 3 4 5 6 7 8 9 10 11 12])
+              out (tensor.relu (tensor.transpose x 1 3))]
+          (assert.same [3 2 2] out.shape)
+          (assert.same [1 7 4 10 2 8 5 11 3 9 6 12] out.data))))
+
+    (it "normalizes negative transpose axes and rejects duplicate axes"
+      (fn []
+        (let [x (tensor.new [2 2 3] [1 2 3 4 5 6 7 8 9 10 11 12])]
+          (assert.equal (tensor.transpose x 1 3) (tensor.transpose x 1 -1))
+          (assert.has_error (fn [] (tensor.transpose x 2 2)))
+          (assert.has_error (fn [] (tensor.transpose (tensor.new [2 2] [1 2 3 4]))))))
+
+    (it "keeps axis operations correct after transposing N-D logical dimensions"
+      (fn []
+        (let [x (tensor.new [2 3] [1 2 3 4 5 6])
+              transposed (tensor.transpose x 1 2)
+              probs (tensor.softmax transposed 1)
+              target (tensor.new [3 2] [0 0 0 0 1 1])
+              loss ((. tensor :cross-entropy) transposed target 1)]
+          (assert.same [3 2] probs.shape)
+          (assert.near (/ 1 (+ 1 (math.exp 1) (math.exp 2))) (. probs.data 1) 0.000000000001)
+          (assert.near (/ (math.exp 1) (+ 1 (math.exp 1) (math.exp 2))) (. probs.data 3) 0.000000000001)
+          (assert.near (/ (math.exp 2) (+ 1 (math.exp 1) (math.exp 2))) (. probs.data 5) 0.000000000001)
+          (assert.same [3 3] (. (tensor.argmax transposed 1) :data))
+          (assert.near (- (math.log (/ (math.exp 2) (+ 1 (math.exp 1) (math.exp 2)))))
+                       (. loss.data 1) 0.000000000001))))
+
+    (it "keeps unary operations and transpose backward in logical coordinate order"
+      (fn []
+        (let [x (tensor.new [2 3] [1 2 3 4 5 6])
+              transposed (tensor.transpose x 1 2)
+              transformed (tensor.pow (tensor.scale transposed (tensor.scalar 2)) (tensor.scalar 2))
+              weights (tensor.new [3 2] [1 2 3 4 5 6])
+              loss (tensor.sum (tensor.mul transposed weights))]
+          (assert.same [4 64 16 100 36 144] transformed.data)
+          (tensor.backward! loss)
+          (assert.same [1 3 5 2 4 6] x.gradient.data))))
+
+    (it "broadcasts size-one dimensions at any aligned N-D axis"
+      (fn []
+        (let [left (tensor.new [2 1 3] [1 2 3 4 5 6])
+              right (tensor.new [1 4 1] [10 20 30 40])
+              out (tensor.add left right)]
+          (assert.same [2 4 3] out.shape)
+          (assert.same [11 12 13 21 22 23 31 32 33 41 42 43
+                        14 15 16 24 25 26 34 35 36 44 45 46]
+                       out.data))))
+
+    (it "broadcasts correctly when an operand has transposed logical strides"
+      (fn []
+        (let [x (tensor.new [2 3] [1 2 3 4 5 6])
+              rows (tensor.new [3 1] [10 20 30])
+              out (tensor.add (tensor.transpose x 1 2) rows)]
+          (assert.same [3 2] out.shape)
+          (assert.same [11 14 22 25 33 36] out.data))))
+
+    (it "unbroadcasts gradients over every size-one expanded dimension"
+      (fn []
+        (let [left (tensor.new [2 1 3] [1 2 3 4 5 6])
+              right (tensor.new [1 4 1] [10 20 30 40])
+              loss (tensor.sum (tensor.add left right))]
+          (tensor.backward! loss)
+          (assert.same [2 1 3] left.gradient.shape)
+          (assert.same [4 4 4 4 4 4] left.gradient.data)
+          (assert.same [1 4 1] right.gradient.shape)
+          (assert.same [6 6 6 6] right.gradient.data))))
+
+    (it "multiplies batched matrices while broadcasting their leading dimensions"
+      (fn []
+        (let [left (tensor.new [2 2 3] [1 2 3 4 5 6 7 8 9 10 11 12])
+              right (tensor.new [1 3 2] [1 2 3 4 5 6])
+              out (tensor.matmul left right)]
+          (assert.same [2 2 2] out.shape)
+          (assert.same [22 28 49 64 76 100 103 136] out.data))))
+
+    (it "unbroadcasts the broadcast batch operand in batched matmul backward"
+      (fn []
+        (let [left (tensor.new [2 2 3] [1 2 3 4 5 6 7 8 9 10 11 12])
+              right (tensor.new [1 3 2] [1 2 3 4 5 6])
+              loss (tensor.sum (tensor.matmul left right))]
+          (tensor.backward! loss)
+          (assert.same [2 2 3] left.gradient.shape)
+          (assert.same [3 7 11 3 7 11 3 7 11 3 7 11] left.gradient.data)
+          (assert.same [1 3 2] right.gradient.shape)
+          (assert.same [22 22 26 26 30 30] right.gradient.data))))
+
+    (it "gathers whole slices along a specified source axis"
+      (fn []
+        (let [source (tensor.new [2 3 2] [1 2 3 4 5 6 7 8 9 10 11 12])
+              indices (tensor.new [2] [3 1])
+              out (tensor.gather source indices 2)]
+          (assert.same [2 2 2] out.shape)
+          (assert.same [5 6 1 2 11 12 7 8] out.data)
+          (assert.equal out (tensor.gather source indices -2)))))
+
+    (it "scatters generalized gather gradients into the selected source slices"
+      (fn []
+        (let [source (tensor.new [2 3 2] [1 2 3 4 5 6 7 8 9 10 11 12])
+              indices (tensor.new [2] [3 1])
+              out (tensor.gather source indices 2)]
+          (set out.gradient (tensor.new out.shape [1 1 1 1 1 1 1 1]))
+          (tensor.backward-step! out)
+          (assert.same [2 3 2] source.gradient.shape)
+          (assert.same [1 1 0 0 1 1 1 1 0 0 1 1] source.gradient.data))))))
+
 (describe "Tensor:zero_grad"
   (fn []
     (it "resets a matrix tensor's gradient to zeros matching its shape"
@@ -1230,5 +1341,5 @@
             (tset old-gradient.data 1 7)
             (tensor.zero-grad! m)
             (assert.is_false (rawequal old-gradient m.gradient))
-            (assert.equal 7 (. old-gradient.data 1))))))))
+            (assert.equal 7 (. old-gradient.data 1)))))))))
 

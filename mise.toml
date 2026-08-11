@@ -2,6 +2,9 @@
 lua = "latest"
 lua-language-server = "latest"
 rust = "latest"
+# luarocks install busted fennel luasocket
+# luasec needs openssel (brew install openssl)
+# luarocks install luasec OPENSSL_DIR="$(brew --prefix openssl)"
 
 [tasks."build:native"]
 description = "Format, lint, and compile the native Rust module"

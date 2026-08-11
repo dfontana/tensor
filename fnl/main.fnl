@@ -45,7 +45,27 @@
               (model.Linear 32 (vocab:size)))]
     (train net input-ids (fn [pred] (tensor.cross-entropy pred targets -1)) steps)))
 
+; (math.randomseed 42)
+; (let [losses (learn-embeds 2000)]
+;   (print (.. "loss after 2000 steps: " (. losses (length losses)))))
 
-(math.randomseed 42)
-(let [losses (learn-embeds 2000)]
-  (print (.. "loss after 2000 steps: " (. losses (length losses)))))
+(fn corpus []
+  (let [path "./tinyshakespeare.txt"
+        file (io.open path "r")]
+    (if file
+      (let [body (file:read "*a")]
+        (file:close)
+        body)
+      (let [http (require :ssl.https)
+            url "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
+            (body status) (http.request url)]
+        (if (= status 200)
+          (let [file (assert (io.open path "w"))]
+            (file:write body)
+            (file:close)
+            body)
+          (error (.. "failed to download corpus (HTTP status "
+                     (tostring status)
+                     ")")))))))
+
+(corpus)

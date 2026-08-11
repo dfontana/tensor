@@ -25,6 +25,8 @@
 } (require :fnl.kernels))
 
 (fn shape->string [s] (.. "(" (table.concat s ",") ")"))
+; TODO N-D: compare logical coordinates through each tensor's strides, rather than
+; comparing backing-storage slots; two equivalent views need not share layout.
 (local mt {
   :__eq (fn [self t] (if
     (not (same-shape? self.shape t.shape)) false
@@ -39,6 +41,8 @@
 })
 
 ; TODO rename new-tensor
+; TODO N-D: give every tensor contiguous row-major strides at construction. Keep `data`
+; as the co-existing storage for now; no offset or slicing/view API is needed.
 (fn new [shape data options]
   (local tensor {
     : shape
@@ -55,9 +59,12 @@
   (setmetatable tensor mt)
   tensor
 )
+; TODO N-D: preserve a kernel result's stride metadata when wrapping it, rather than
+; silently treating its logical values as a newly contiguous tensor.
 (fn tracked [sd parents op ctx] (new sd.shape sd.data {:parents parents :op op :ctx ctx}))
 (fn untracked [sd op] (new sd.shape sd.data {:require_grad false :op op}))
 
+; TODO N-D: these allocations should create contiguous strides for their requested shape.
 (fn fill [shape v options] (new shape (fcollect [_ 1 (numel shape)] v) options))
 (fn zeroes [shape options] (fill shape 0 options))
 (fn scalar [v options] (new {} [ v ] options))
@@ -76,6 +83,8 @@
   ))
   options))
 
+; TODO N-D: these wrappers stay thin, but their kernels must consume logical values
+; through strides and return correctly shaped N-D results.
 (fn add [a b] (tracked (add* a b) [ a b ] :add))
 (fn sub [a b] (tracked (sub* a b) [ a b ] :sub))
 (fn mul [a b] (tracked (mul* a b) [ a b ] :mul))
@@ -84,17 +93,23 @@
 (fn pow [a b] (tracked (pow* a b) [ a b ] :pow))
 (fn sum [a] (tracked (sum* a) [a] :sum))
 (fn mean [a] (tracked (mean* a) [a] :mean))
+; TODO N-D: carry the broadcasted batch shape needed by the matmul backward rule.
 (fn matmul [a b] (tracked (matmul* a b) [ a b ] :matmul))
-(fn transpose [a] (tracked (transpose* a) [a] :transpose))
+; TODO N-D: accept two axes, normalize them, and retain them in ctx so backward
+; swaps the same pair. A transpose should rearrange shape/strides, not data.
+(fn transpose [a axis-a axis-b] (tracked (transpose* a axis-a axis-b) [a] :transpose {:axis-a axis-a :axis-b axis-b}))
 
 (fn softmax [a axis temp] (tracked (softmax* a axis temp) [a] :softmax {:axis axis :temp (or temp 1.0)}))
 (fn argmax [a axis] (untracked (argmax* a axis) :argmax))
 (fn cross-entropy [a actual axis] (tracked (cross-entropy* a actual axis) [a] :cross-entropy {:actual actual :axis axis}))
-; Select the given indicies (selectt is a tensor used for accessing) from a
-; This is mostly relevant for extracting embeddings, etc
-(fn index-select [a selectt] (tracked (index-select* a selectt) [a] :index-select {:idx selectt}))
+; TODO N-D: accept an axis and retain it in ctx. Gather should replace that source
+; axis with `selectt.shape`, selecting whole slices before and after the axis.
+(fn index-select [a selectt axis] (tracked (index-select* a selectt axis) [a] :index-select {:idx selectt :axis axis}))
 
+; TODO N-D: gradients are fresh contiguous tensors of the parent's logical shape.
 (fn zero-grad! [a] (set a.gradient (zeroes a.shape {:require_grad false})))
+; TODO N-D: replace the scalar/vector shape cases with a general unbroadcast:
+; align parent and result ranks, then sum every broadcast-expanded dimension.
 (fn accum-grad! [a grad]
   ; Untracked don't backprop, skip
   (when a.tracked?
@@ -135,10 +150,13 @@
   :scale (acc-par (scale* grad (par 2)) (mul* (par 1) grad))
   :mean (acc-par (scale* grad (scalar (/ 1 (numel (. (par 1) :shape))))))
   :sum  (acc-par grad)
+  ; TODO N-D: form batched matmul gradients with trailing-axis transposes, then
+  ; let general unbroadcasting reduce any broadcast batch dimensions.
   :matmul (acc-par
     (matmul* grad (transpose* (par 2)))
     (matmul* (transpose* (par 1)) grad))
-  :transpose  (acc-par (transpose* grad))
+  ; TODO N-D: transpose the upstream gradient using the saved axis pair.
+  :transpose  (acc-par (transpose* grad a.ctx.axis-a a.ctx.axis-b))
   :pow (acc-par
         ; base grad is chain-rule plumbing over existing kernels: grad ⊙ t ⊙ self^(t-1)
         (mul* (mul* grad (par 2))
@@ -152,6 +170,7 @@
   ; ctx carries actual + axis; the backward kernel recomputes the probabilities
   :cross-entropy (accum-grad! (par 1) (cross-entropy-backward* (par 1) grad a.ctx.actual a.ctx.axis))
   ; ctx carries the index tensor (deliberately not a parent); scatter-add onto the source
+  ; TODO N-D: scatter the gradient into whole source slices using the saved axis.
   :index-select (accum-grad! (par 1) (index-select-backward* (par 1) grad a.ctx.idx))
   _ nil
 ))
