@@ -3,9 +3,9 @@ lua = "latest"
 lua-language-server = "latest"
 
 [tasks.test]
-description = "Run the tensor test suite (Fennel implementation)"
-run = "busted --helper test/helper.lua test"
+description = "Run the tensor test suite"
+run = "busted -e 'require(\"fennel\").install(); require(\"test.helper\")' --loaders fennel test"
 
 [tasks.main]
 description = "Run the tensor example"
-run = "fennel fnl/example.fnl"
+run = "fennel fnl/main.fnl"

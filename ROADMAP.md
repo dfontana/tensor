@@ -13,8 +13,6 @@ N-1. N-D Tensors -> Batching Optimizations, Structured Data (batches of sentence
   - MatMul, Transpose, Gather
 N+1. Sparse tensors?
 N+2. Operator overloading? (Meh -- decided against during the Fennel port)
-N+3. _backward stores an op-code not function to avoid allocating function on heap? Still have to capture parents in forward pass
-N+4. Backward functions calling public methods create graphs that go to waste instead of just math functions
 
 ## Go learn about: strides and views (solves N-1 and N)
 
@@ -91,9 +89,3 @@ What it costs, and the real reason to think before adopting it:
   "why must a node's gradient be fully accumulated before it propagates further"
   visible; the tape makes it true by construction, which is great engineering and
   worse pedagogy.
-
-Also see the note in `learnings.md` on the streaming alternative: track a child
-count per node during the forward pass and process a node once all its children
-have reported in. That trades a list of pointers for a counter per node, reducing
-peak memory at the cost of more per-node metadata. Three designs, same result —
-worth implementing at least two to feel the difference.

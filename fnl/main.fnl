@@ -45,4 +45,7 @@
               (model.Linear 32 (vocab:size)))]
     (train net input-ids (fn [pred] (tensor.cross-entropy pred targets -1)) steps)))
 
-{: train : learn-xor : learn-bigram : learn-embeds}
+
+(math.randomseed 42)
+(let [losses (learn-embeds 2000)]
+  (print (.. "loss after 2000 steps: " (. losses (length losses)))))
