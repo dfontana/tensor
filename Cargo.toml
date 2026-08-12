@@ -8,4 +8,5 @@ rust-version = "1.97"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+fearless_simd = "=0.7.0"
 mlua = { version = "0.12", features = ["lua55", "module"] }

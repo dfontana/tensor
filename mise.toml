@@ -38,7 +38,22 @@ run = "cargo test"
 [tasks.test]
 description = "Run the tensor test suite"
 depends = ["release:native"]
-run = "LUA_CPATH='./build/lua/?.so;;' busted -e 'require(\"fennel\").install(); require(\"test.helper\")' --loaders fennel test"
+run = "LUA_CPATH='./build/lua/?.so;;' busted -e 'require(\"fennel\").install(); require(\"test.helper\")' --loaders fennel test/native_spec.fnl test/optimizer_spec.fnl test/tensor_spec.fnl test/vocab_spec.fnl"
+
+[tasks."test:fallback"]
+description = "Run the explicit no-native Fennel fallback suite"
+depends = ["release:native"]
+run = "TENSOR_FORCE_NO_NATIVE=1 LUA_CPATH='./build/lua/?.so;;' busted -e 'require(\"fennel\").install(); require(\"test.helper\")' --loaders fennel test/fallback_spec.fnl"
+
+[tasks."test:nd"]
+description = "Run the opt-in deferred N-D tensor suite"
+depends = ["release:native"]
+run = "LUA_CPATH='./build/lua/?.so;;' busted -e 'require(\"fennel\").install(); require(\"test.helper\")' --loaders fennel test/nd_spec.fnl"
+
+[tasks.benchmark]
+description = "Compare native Storage and Lua-table elementwise addition"
+depends = ["release:native"]
+run = "LUA_CPATH='./build/lua/?.so;;' lua bench/storage.lua"
 
 [tasks.main]
 description = "Run the tensor example"

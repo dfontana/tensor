@@ -24,6 +24,22 @@
   : pow-exponent-backward*
 } (require :fnl.kernels))
 
+; Optional native storage is loaded once by this module. The environment switch
+; is intentionally only for the explicit table-fallback test command.
+(local native
+  (if (= (os.getenv "TENSOR_FORCE_NO_NATIVE") "1")
+      nil
+      (let [(ok? module) (pcall require :tensor_native)]
+        (and ok? module))))
+
+(fn native-storage? [data]
+  (and native (native.is_storage data)))
+
+(fn data->table [data]
+  (if (native-storage? data)
+      (data:to_table)
+      data))
+
 (fn shape->string [s] (.. "(" (table.concat s ",") ")"))
 ; TODO N-D: compare logical coordinates through each tensor's strides, rather than
 ; comparing backing-storage slots; two equivalent views need not share layout.
@@ -36,7 +52,7 @@
   ))
   :__tostring (fn [self] (..
     (shape->string self.shape)
-    " [" (table.concat self.data ",") "]"
+    " [" (table.concat (data->table self.data) ",") "]"
   ))
 })
 
@@ -46,7 +62,9 @@
 (fn new [shape data options]
   (local tensor {
     : shape
-    : data
+    ; Keep tensor metadata and graph state as Lua, while native.storage is an
+    ; identity-preserving boundary for dense tensor values.
+    :data (if native (native.storage data) data)
     :parents (or (?. options :parents) [])
     ; TODO rename to tracked
     :tracked? (not= (?. options :require_grad) false)
@@ -119,10 +137,12 @@
     (let [ag a.gradient
           n (last a.shape)]
       (if
-        ; same shape -> straight elementwise accumulation
+        ; same shape -> native accumulation when both values are Storage.
         (same-shape? a.shape grad.shape)
-          (for [i 1 (length ag.data)]
-            (tset ag.data i (+ (. ag.data i) (. grad.data i))))
+          (if (and (native-storage? ag.data) (native-storage? grad.data))
+              (native.add_into ag.data grad.data ag.data)
+              (for [i 1 (length ag.data)]
+                (tset ag.data i (+ (. ag.data i) (. grad.data i)))))
         ; scalar grad -> broadcast against a
         (scalar? grad)
             (for [i 1 (length ag.data)]
