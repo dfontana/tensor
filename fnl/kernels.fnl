@@ -1,4 +1,13 @@
-;  Kernels take and return plain {shape data} - Nothing else
+; Kernels take and return plain {shape data} - Nothing else
+
+; Loading the optional native module is deliberately local to the Fennel
+; integration. A test-only environment switch keeps the table implementation
+; reachable even when the shared object is installed.
+(local native
+  (if (= (os.getenv "TENSOR_FORCE_NO_NATIVE") "1")
+      nil
+      (let [(ok? module) (pcall require :tensor_native)]
+        (and ok? module))))
 
 (fn last [a] (. a (length a)))
 
@@ -67,20 +76,63 @@
     :data [(finish acc)]
   })
 
-(fn add* [at bt] (binary-elementwise at bt #(+ $1 $2)))
-(fn sub* [at bt] (binary-elementwise at bt #(- $1 $2)))
-(fn mul* [at bt] (binary-elementwise at bt #(* $1 $2)))
+(fn native-storage? [data]
+  (and native (native.is_storage data)))
 
-(fn relu* [at] (unary-elementwise at #(math.max 0 $1)))
+(fn native-binary [at bt kernel]
+  (let [out (native.storage_zeros (numel at.shape))]
+    (kernel at.data bt.data out)
+    {:shape at.shape :data out}))
+
+(fn add* [at bt]
+  (if (and (same-shape? at.shape bt.shape)
+           (native-storage? at.data)
+           (native-storage? bt.data))
+      (native-binary at bt native.add_into)
+      (binary-elementwise at bt #(+ $1 $2))))
+(fn sub* [at bt]
+  (if (and (same-shape? at.shape bt.shape)
+           (native-storage? at.data)
+           (native-storage? bt.data))
+      (native-binary at bt native.sub_into)
+      (binary-elementwise at bt #(- $1 $2))))
+(fn mul* [at bt]
+  (if (and (same-shape? at.shape bt.shape)
+           (native-storage? at.data)
+           (native-storage? bt.data))
+      (native-binary at bt native.mul_into)
+      (binary-elementwise at bt #(* $1 $2))))
+
+(fn relu* [at]
+  (if (native-storage? at.data)
+      (let [out (native.storage_zeros (numel at.shape))]
+        (native.relu_into at.data out)
+        {:shape at.shape :data out})
+      (unary-elementwise at #(math.max 0 $1))))
 (fn scale* [at bt]
   (assert (scalar? bt))
-  (unary-elementwise at #(* $1 (. bt.data 1))))
+  (if (and (native-storage? at.data) (native-storage? bt.data))
+      (let [out (native.storage_zeros (numel at.shape))]
+        (native.scale_into at.data (. bt.data 1) out)
+        {:shape at.shape :data out})
+      (unary-elementwise at #(* $1 (. bt.data 1)))))
 (fn pow* [at bt]
   (assert (scalar? bt))
-  (unary-elementwise at #(^ $1 (. bt.data 1))))
+  (if (and (native-storage? at.data) (native-storage? bt.data))
+      (let [out (native.storage_zeros (numel at.shape))]
+        (native.pow_into at.data (. bt.data 1) out)
+        {:shape at.shape :data out})
+      (unary-elementwise at #(^ $1 (. bt.data 1)))))
 
-(fn sum* [at] (reduce at #(+ $1 $2) #$))
-(fn mean* [at] (reduce at #(+ $1 $2) #(/ $1 (numel at.shape))))
+(fn sum* [at]
+  (if (native-storage? at.data)
+      {:shape [] :data [(native.sum at.data)]}
+      (reduce at #(+ $1 $2) #$)))
+(fn mean* [at]
+  (assert (> (numel at.shape) 0) "mean is undefined for an empty tensor")
+  (if (native-storage? at.data)
+      {:shape [] :data [(native.mean at.data)]}
+      (reduce at #(+ $1 $2) #(/ $1 (numel at.shape)))))
 
 ; TODO N-D: treat the final two dimensions as matrices; broadcast every leading
 ; batch dimension, and address both inputs by their batch/matrix strides.
@@ -90,14 +142,20 @@
   (let [m (. at.shape 1)   ; rows of A / of output
         k (. at.shape 2)   ; shared inner dim
         n (. bt.shape 2)]  ; cols of B / of output
-  {:shape [m n]
-   :data (fcollect [idx 1 (* m n)]
-           (let [r (// (- idx 1) n)
-                 c (% (- idx 1) n)]
-           (faccumulate [dot 0 p 1 k]
-             (+ dot (* (. at.data (+ (* r k) p))
-                       (. bt.data (+ (* (- p 1) n) c 1)
-  ))))))}))
+    (if (and (= (length at.shape) 2)
+             (= (length bt.shape) 2)
+             (native-storage? at.data)
+             (native-storage? bt.data))
+        (let [out (native.storage_zeros (* m n))]
+          (native.matmul_into at.data bt.data m k n out)
+          {:shape [m n] :data out})
+        {:shape [m n]
+         :data (fcollect [idx 1 (* m n)]
+                 (let [r (// (- idx 1) n)
+                       c (% (- idx 1) n)]
+                   (faccumulate [dot 0 p 1 k]
+                     (+ dot (* (. at.data (+ (* r k) p))
+                               (. bt.data (+ (* (- p 1) n) c 1)))))))})))
 
 
 ; TODO N-D: accept two normalized axes, swap their shape and stride entries, and

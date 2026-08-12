@@ -13,7 +13,11 @@ For the rest of the roadmap we can use [tiny shakespeare](https://raw.githubuser
 6a. Grouped Query Heads attention
 6b. KV Caching
 7. tokenization (tiktoken, etc)
-6. Simd via rust + mlua + neon (plugable backend to the autograd core). Triton?
+4. Native CPU v1
+  - Fennel tensors keep Lua metadata/autograd tables with optional GC-owned f32 Storage data
+  - Exact-shape contiguous elementwise kernels, reductions, rank-2 matmul, same-shape gradient accumulation, and SGD use the native module
+  - Broadcasting, views/transpose, gather, softmax, and other complex operations remain Fennel until the stride milestone
+  - The explicit `TENSOR_FORCE_NO_NATIVE=1` test task verifies the genuine Lua-table fallback
 N-1. Batching matrix ops
 N+1. Sparse tensors?
 N+2. SIMD / GPU support

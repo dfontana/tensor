@@ -1,5 +1,6 @@
 (local Vocab (require :fnl.vocab))
 (local assert (require :luassert))
+(local assert-data (. (require :test.helper) :assert-data))
 
 (describe "Vocab:size"
   (fn []
@@ -33,7 +34,7 @@
               hot (vocab:one_hot "dog")]
           (assert.same [3] hot.shape)
           ; "dog" is id 2, so only the second slot is set.
-          (assert.same [0 1 0] hot.data)
+          (assert-data [0 1 0] hot.data)
           ; built with require_grad = false, so it carries no gradient buffer
           (assert.is_nil hot.gradient))))
 

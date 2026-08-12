@@ -1,6 +1,7 @@
 (local tensor (require :fnl.tensor))
 (local optimizer (require :fnl.optimizer))
 (local assert (require :luassert))
+(local assert-data (. (require :test.helper) :assert-data))
 
 ; Free-function API. The kebab / `!` names are reached through keyword field
 ; access because Lua receives those exact exported names.
@@ -18,7 +19,7 @@
           (set params.m.gradient (tensor.new params.m.shape [9 9 9 9 9 9]))
           (set params.b.gradient (tensor.scalar 9))
           (zero params)
-          (assert.same [0 0 0 0 0 0] params.m.gradient.data)
+          (assert-data [0 0 0 0 0 0] params.m.gradient.data)
           (assert.equal 0 (. params.b.gradient.data 1)))))))
 
 (describe "optimizer.step!"
@@ -31,8 +32,8 @@
           (set params.b.gradient (tensor.scalar 2))
           (step params 0.1)
           ; p := p - lr * grad
-          (assert.same [0.9 1.9 2.9] params.m.data)
-          (assert.near 9.8 (. params.b.data 1) 0.000000001))))))
+          (assert-data [0.9 1.9 2.9] params.m.data)
+          (assert.near 9.8 (. params.b.data 1) 0.000001))))))
 
 (describe "optimizer.mean-squared"
   (fn []
@@ -43,7 +44,7 @@
               loss (mean-squared pred actual)]
           (assert.same [] loss.shape)
           ; mean(1^2, 2^2, 3^2) = 14 / 3
-          (assert.near (/ 14 3) (. loss.data 1) 0.000000001))))
+          (assert.near (/ 14 3) (. loss.data 1) 0.000001))))
 
     (it "is zero exactly when the prediction equals the target"
       (fn []
@@ -68,9 +69,9 @@
               loss (mean-squared pred actual)]
           (backward loss)
           ; 2 * {1, 2, 3} / 3
-          (assert.near (/ 2 3) (. pred.gradient.data 1) 0.000000001)
-          (assert.near (/ 4 3) (. pred.gradient.data 2) 0.000000001)
-          (assert.near (/ 6 3) (. pred.gradient.data 3) 0.000000001))))))
+          (assert.near (/ 2 3) (. pred.gradient.data 1) 0.000001)
+          (assert.near (/ 4 3) (. pred.gradient.data 2) 0.000001)
+          (assert.near (/ 6 3) (. pred.gradient.data 3) 0.000001))))))
 
 (describe "Optimizer end-to-end (linear regression, the milestone goal)"
   (fn []

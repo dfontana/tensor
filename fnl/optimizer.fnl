@@ -1,5 +1,14 @@
 (local {: scalar : sub : pow : mean : zero-grad!} (require :fnl.tensor))
 
+(local native
+  (if (= (os.getenv "TENSOR_FORCE_NO_NATIVE") "1")
+      nil
+      (let [(ok? module) (pcall require :tensor_native)]
+        (and ok? module))))
+
+(fn native-storage? [data]
+  (and native (native.is_storage data)))
+
 ; Reset every parameter's gradient.
 (fn zero! [params]
   (each [_ p (pairs params)]
@@ -9,8 +18,10 @@
 (fn step! [params lr]
   (each [_ p (pairs params)]
     (when p.gradient
-      (for [i 1 (length p.data)]
-        (tset p.data i (- (. p.data i) (* lr (. p.gradient.data i))))))))
+      (if (and (native-storage? p.data) (native-storage? p.gradient.data))
+          (native.sgd_step p.data p.gradient.data lr)
+          (for [i 1 (length p.data)]
+            (tset p.data i (- (. p.data i) (* lr (. p.gradient.data i)))))))))
 
 ; Mean-squared error, composed from already-gradchecked ops.
 (fn mean-squared [pred actual]
